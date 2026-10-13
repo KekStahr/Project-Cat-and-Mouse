@@ -36,19 +36,27 @@ SDK direkt getestet werden.
 
 ## Online-Betrieb
 
-Die Web-Oberfläche kann als statische Flutter-Web-App gebaut werden:
+Die App synchronisiert Gruppen, Einladungen, Chatnachrichten und
+Sicherheitsmeldungen mit dem Express-Server. Die API-Adresse ist standardmäßig
+`https://project-cat-and-mouse.onrender.com`; sie kann beim Build mit
+`--dart-define=API_BASE_URL=<URL>` überschrieben werden.
+
+Der Server benötigt PostgreSQL. Für Render eine PostgreSQL-Datenbank anlegen und
+bei der Web-Service-Umgebung `DATABASE_URL` auf deren interne Verbindungs-URL
+setzen. `DATABASE_SSL=true` ist nur nötig, wenn die verwendete Verbindungs-URL
+TLS verlangt. Beim Serverstart werden die Tabellen angelegt. Danach den Service
+mit dem aktualisierten `genz-server`-Quellcode neu deployen.
+
+Für einen Client-Build:
 
 ```powershell
+flutter pub get
 flutter build web --release
 ```
 
-Die erzeugten Dateien liegen in `build/web` und können auf einem Webhost mit
-HTTPS ausgeliefert werden. Das ist nur die Oberfläche: Gruppen, Chat, Einladungen
-und Standortdaten werden in diesem Prototyp nicht zwischen Geräten synchronisiert.
-Dafür ist zusätzlich ein Backend mit Anmeldung über zufällige anonyme Kennungen,
-kurzlebigen Einladungs-Codes, Rollen-/Zugriffskontrollen, Echtzeitnachrichten und
-Löschfristen für sensible Daten nötig. Standortfreigabe sollte ausdrücklich
-opt-in, zeitlich begrenzt und jederzeit stoppbar sein.
+oder für Android/iOS die jeweilige Flutter-App bauen. Eine Flutter-Web-App muss
+separat gehostet werden; die Render-Adresse ist hier die API und liefert nicht
+die Flutter-Oberfläche aus.
 
 ## Online-Server oder P2P?
 
@@ -67,9 +75,11 @@ geschützt und gelöscht werden.
 
 ## Prototyp-Grenzen
 
-Gruppeneinladungen und Chat sind lokale Demo-Daten; Codes lassen sich nur innerhalb
-dieser laufenden Vorschau verwenden. Die Karte ist eine illustrative Darstellung
-ohne Kartenanbieter oder GPS-Ortung. Die individuelle Demo-Einladung kann auf
-1 bis 168 Stunden eingestellt werden. Vor einer echten Veröffentlichung müssen insbesondere Backend,
-Datenschutz, Einwilligung zur Standortfreigabe und ein Sicherheitskonzept ergänzt
+Mitgliedskennungen werden lokal auf dem Gerät gespeichert; eine Anmeldung,
+Kennungs-Wiederherstellung, Ratenbegrenzung und automatische Datenlöschung sind
+noch nicht eingerichtet. Einladungen gewähren den Beitritt bis zu ihrem Ablauf,
+aber Gruppen und Nachrichten werden derzeit nicht automatisch gelöscht. Die
+Karte bleibt eine illustrative Darstellung ohne Kartenanbieter oder GPS-Ortung.
+Vor einem produktiven Einsatz müssen insbesondere Identität, Zugriffsschutz,
+Aufbewahrungsfristen, Datenschutz und Einwilligung zur Standortfreigabe ergänzt
 werden.
