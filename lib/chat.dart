@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'main.dart';
 
 class ChatScreen extends StatelessWidget {
@@ -19,9 +20,24 @@ class ChatScreen extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 20, 18, 14),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: const [
-              Text('Gruppenchat', style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700)),
+              Text(
+                'Gruppenchat',
+                style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 5),
+              Row(
+                children: [
+                  Icon(Icons.lock_rounded, size: 13, color: Color(0xFF9BE3C0)),
+                  SizedBox(width: 5),
+                  Text(
+                    'Nachrichten werden auf den Geräten verschlüsselt',
+                    style: TextStyle(color: Color(0xFF8B9AAA), fontSize: 11),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -32,19 +48,29 @@ class ChatScreen extends StatelessWidget {
             itemBuilder: (context, index) {
               final message = messages[index];
               return Align(
-                alignment: message.mine ? Alignment.centerRight : Alignment.centerLeft,
+                alignment: message.mine
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
                 child: Container(
                   constraints: const BoxConstraints(maxWidth: 300),
                   margin: const EdgeInsets.only(bottom: 10),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: message.mine ? const Color(0xFF203B33) : const Color(0xFF121B26),
+                    color: message.mine
+                        ? const Color(0xFF203B33)
+                        : const Color(0xFF121B26),
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(message.senderName, style: const TextStyle(color: Color(0xFF9BE3C0), fontSize: 11)),
+                      Text(
+                        message.senderName,
+                        style: const TextStyle(
+                          color: Color(0xFF9BE3C0),
+                          fontSize: 11,
+                        ),
+                      ),
                       const SizedBox(height: 4),
                       Text(message.text),
                     ],
@@ -71,7 +97,10 @@ class ChatScreen extends StatelessWidget {
                     hintText: 'Nachricht schreiben …',
                     filled: true,
                     fillColor: const Color(0xFF121B26),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: BorderSide.none,
+                    ),
                   ),
                 ),
               ),

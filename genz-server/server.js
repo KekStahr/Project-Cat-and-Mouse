@@ -12,7 +12,7 @@ const pool = new Pool({
             : undefined,
 });
 
-app.use(express.json({ limit: "16kb" }));
+app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Member-Id");
@@ -33,14 +33,20 @@ const schema = `
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
         name text NOT NULL,
-        role text NOT NULL DEFAULT 'member',
-        last_seen_at timestamptz NOT NULL DEFAULT now()
+        role text NOT NULL DEFAULT 'soldier',
+        last_seen_at timestamptz NOT NULL DEFAULT now(),
+        officer_id uuid REFERENCES members(id) ON DELETE SET NULL,
+        color text,
+        public_key text,
+        location_lat double precision,
+        location_lon double precision,
+        location_updated_at timestamptz
     );
     CREATE TABLE IF NOT EXISTS messages (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
         sender_id uuid NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-        text text NOT NULL,
+        encrypted_payload jsonb NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS pings (
@@ -59,7 +65,31 @@ const schema = `
     CREATE INDEX IF NOT EXISTS messages_group_created_idx
         ON messages(group_id, created_at);
     CREATE INDEX IF NOT EXISTS members_group_idx ON members(group_id);
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS officer_id uuid
+        REFERENCES members(id) ON DELETE SET NULL;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS color text;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS public_key text;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS location_lat double precision;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS location_lon double precision;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS location_updated_at timestamptz;
+    UPDATE members SET role = 'general' WHERE role = 'organizer';
+    UPDATE members SET role = 'soldier' WHERE role = 'member';
+    UPDATE members SET color = '#FF3B30' WHERE role = 'general' AND color IS NULL;
+    ALTER TABLE members ALTER COLUMN role SET DEFAULT 'soldier';
+    UPDATE members SET location_lat = NULL, location_lon = NULL,
+        location_updated_at = NULL
+        WHERE location_updated_at < now() - interval '2 minutes';
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS encrypted_payload jsonb;
+    DELETE FROM messages WHERE encrypted_payload IS NULL;
+    ALTER TABLE messages DROP COLUMN IF EXISTS text;
+    ALTER TABLE messages ALTER COLUMN encrypted_payload SET NOT NULL;
+    CREATE INDEX IF NOT EXISTS members_location_updated_idx
+        ON members(location_updated_at);
 `;
+
+function randomOfficerColor() {
+    return `#${randomInt(0x1000000).toString(16).padStart(6, "0").toUpperCase()}`;
+}
 
 function inputText(value, maxLength) {
     return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -97,6 +127,21 @@ app.get("/health", async (_req, res) => {
 });
 
 app.post("/api/groups", async (req, res) => {
+    const existingMemberId = req.get("X-Member-Id");
+    if (existingMemberId) {
+        const existingMember = await pool.query(
+            "SELECT role FROM members WHERE id = $1",
+            [existingMemberId],
+        );
+        if (existingMember.rowCount === 0) {
+            return res.status(403).json({ error: "Mitgliedskennung ungültig." });
+        }
+        if (existingMember.rows[0].role !== "general") {
+            return res.status(403).json({
+                error: "Nur der General kann eine weitere Gruppe erstellen.",
+            });
+        }
+    }
     const name = inputText(req.body.groupName, 60);
     const memberName = inputText(req.body.memberName, 24);
     const expiresInMinutes = Number(req.body.expiresInMinutes);
@@ -122,7 +167,7 @@ app.post("/api/groups", async (req, res) => {
             );
             const member = await client.query(
                 `INSERT INTO members(group_id, name, role)
-                 VALUES ($1, $2, 'organizer') RETURNING id, name, role`,
+                 VALUES ($1, $2, 'general') RETURNING id, name, role`,
                 [group.rows[0].id, memberName],
             );
             await client.query("COMMIT");
@@ -188,8 +233,14 @@ app.get("/api/groups/:groupId", async (req, res) => {
             [req.params.groupId],
         ),
         pool.query(
-            `SELECT m.id, m.name, m.role,
+            `SELECT m.id, m.name, m.role, m.officer_id, m.color, m.public_key,
                  (m.last_seen_at > now() - interval '60 seconds') AS online,
+                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                      THEN m.location_lat ELSE NULL END AS latitude,
+                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                      THEN m.location_lon ELSE NULL END AS longitude,
+                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                      THEN m.location_updated_at ELSE NULL END AS location_updated_at,
                  (a.member_id IS NOT NULL) AS acknowledged
              FROM members m
              LEFT JOIN pings p ON p.group_id = m.group_id
@@ -200,7 +251,7 @@ app.get("/api/groups/:groupId", async (req, res) => {
             [req.params.groupId],
         ),
         pool.query(
-            `SELECT messages.id, messages.text, messages.sender_id,
+            `SELECT messages.id, messages.encrypted_payload, messages.sender_id,
                  members.name AS sender_name, messages.created_at
              FROM (SELECT * FROM messages WHERE group_id = $1
                          ORDER BY created_at DESC LIMIT 100) messages
@@ -230,14 +281,148 @@ app.get("/api/groups/:groupId", async (req, res) => {
 app.post("/api/groups/:groupId/messages", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
-    const text = inputText(req.body.text, 2000);
-    if (!text) return badRequest(res, "Nachricht darf nicht leer sein.");
+    const payload = req.body.encryptedPayload;
+    const recipients = payload?.recipients;
+    if (
+        payload?.version !== 1 ||
+        recipients === null ||
+        typeof recipients !== "object" ||
+        Array.isArray(recipients) ||
+        Buffer.byteLength(JSON.stringify(payload), "utf8") > 900_000
+    ) {
+        return badRequest(res, "Verschlüsselte Nachricht ist ungültig.");
+    }
+    const groupMembers = await pool.query(
+        "SELECT id, public_key FROM members WHERE group_id = $1",
+        [req.params.groupId],
+    );
+    if (
+        groupMembers.rows.some(
+            (recipient) =>
+                !recipient.public_key ||
+                !Object.hasOwn(recipients, recipient.id) ||
+                !isValidEnvelope(recipients[recipient.id]),
+        ) ||
+        Object.keys(recipients).length !== groupMembers.rowCount
+    ) {
+        return res.status(409).json({
+            error: "Chat-Schlüssel fehlen für Gruppenmitglieder. Gruppe aktualisieren.",
+        });
+    }
     const result = await pool.query(
-        `INSERT INTO messages(group_id, sender_id, text)
-         VALUES ($1, $2, $3) RETURNING id, text, created_at`,
-        [req.params.groupId, member.id, text],
+        `INSERT INTO messages(group_id, sender_id, encrypted_payload)
+         VALUES ($1, $2, $3) RETURNING id, encrypted_payload, created_at`,
+        [req.params.groupId, member.id, payload],
     );
     res.status(201).json({ ...result.rows[0], senderName: member.name });
+});
+
+function isValidEnvelope(envelope) {
+    return (
+        envelope !== null &&
+        typeof envelope === "object" &&
+        typeof envelope.ephemeralKey === "string" &&
+        typeof envelope.salt === "string" &&
+        typeof envelope.nonce === "string" &&
+        typeof envelope.cipherText === "string" &&
+        typeof envelope.mac === "string"
+    );
+}
+
+app.patch("/api/groups/:groupId/members/me/key", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    const publicKey = req.body.publicKey;
+    if (
+        typeof publicKey !== "string" ||
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey) ||
+        Buffer.from(publicKey, "base64").length !== 32
+    ) {
+        return badRequest(res, "Öffentlicher Chat-Schlüssel ist ungültig.");
+    }
+    const result = await pool.query(
+        `UPDATE members SET public_key = $1
+         WHERE id = $2 AND (public_key IS NULL OR public_key = $1)
+         RETURNING public_key`,
+        [publicKey, member.id],
+    );
+    if (result.rowCount === 0) {
+        return res.status(409).json({
+            error: "Für dieses Gerät ist bereits ein anderer Chat-Schlüssel registriert.",
+        });
+    }
+    res.json({ publicKey: result.rows[0].public_key });
+});
+
+app.patch("/api/groups/:groupId/location", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    if (req.body.enabled === false) {
+        await pool.query(
+            `UPDATE members SET location_lat = NULL, location_lon = NULL,
+             location_updated_at = NULL WHERE id = $1`,
+            [member.id],
+        );
+        return res.sendStatus(204);
+    }
+    const { latitude, longitude } = req.body;
+    if (
+        typeof latitude !== "number" ||
+        typeof longitude !== "number" ||
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude) ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180
+    ) {
+        return badRequest(res, "Standortkoordinaten sind ungültig.");
+    }
+    await pool.query(
+        `UPDATE members SET location_lat = $1, location_lon = $2,
+         location_updated_at = now() WHERE id = $3`,
+        [latitude, longitude, member.id],
+    );
+    res.sendStatus(204);
+});
+
+app.post("/api/groups/:groupId/members/:memberId/promote", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    if (member.role !== "general") {
+        return res.status(403).json({ error: "Nur der General kann Offiziere ernennen." });
+    }
+    const result = await pool.query(
+        `UPDATE members SET role = 'officer', officer_id = NULL, color = $1
+         WHERE id = $2 AND group_id = $3 AND role = 'soldier'
+         RETURNING id, name, role, officer_id, color`,
+        [randomOfficerColor(), req.params.memberId, req.params.groupId],
+    );
+    if (result.rowCount === 0) {
+        return res.status(404).json({ error: "Soldat nicht gefunden." });
+    }
+    res.json(result.rows[0]);
+});
+
+app.patch("/api/groups/:groupId/members/me/officer", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    if (member.role !== "soldier") {
+        return res.status(403).json({ error: "Nur Soldaten können einem Offizier beitreten." });
+    }
+    const officerId = inputText(req.body.officerId, 36);
+    const officer = await pool.query(
+        "SELECT id FROM members WHERE id = $1 AND group_id = $2 AND role = 'officer'",
+        [officerId, req.params.groupId],
+    );
+    if (officer.rowCount === 0) {
+        return badRequest(res, "Offizier nicht gefunden.");
+    }
+    await pool.query("UPDATE members SET officer_id = $1 WHERE id = $2", [
+        officerId,
+        member.id,
+    ]);
+    res.sendStatus(204);
 });
 
 app.post("/api/groups/:groupId/pings", async (req, res) => {
@@ -291,7 +476,7 @@ app.patch("/api/groups/:groupId/members/me", async (req, res) => {
     const name = inputText(req.body.name, 24);
     if (!name) return badRequest(res, "Name darf nicht leer sein.");
     const result = await pool.query(
-        "UPDATE members SET name = $1 WHERE id = $2 RETURNING id, name, role",
+        "UPDATE members SET name = $1 WHERE id = $2 RETURNING id, name, role, officer_id, color",
         [name, member.id],
     );
     res.json(result.rows[0]);
@@ -337,6 +522,16 @@ async function start() {
     try {
         await pool.query(schema);
         console.log("Datenbank-Schema erfolgreich initialisiert.");
+        const locationCleanup = setInterval(() => {
+            pool.query(
+                `UPDATE members SET location_lat = NULL, location_lon = NULL,
+                 location_updated_at = NULL
+                 WHERE location_updated_at < now() - interval '2 minutes'`,
+            ).catch((error) => {
+                console.error("Veraltete Standorte konnten nicht gelöscht werden:", error);
+            });
+        }, 30_000);
+        locationCleanup.unref();
     } catch (err) {
         console.error("Fehler beim Erstellen des Tabellen-Schemas:", err);
     }

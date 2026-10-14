@@ -19,9 +19,11 @@ class GroupApi {
     required String groupName,
     required String memberName,
     required int expiresInMinutes,
+    String? memberId,
   }) => _send(
     'POST',
     '/api/groups',
+    memberId: memberId,
     body: {
       'groupName': groupName,
       'memberName': memberName,
@@ -46,13 +48,68 @@ class GroupApi {
   Future<Map<String, dynamic>> sendMessage({
     required String groupId,
     required String memberId,
-    required String text,
+    required Map<String, Object?> encryptedPayload,
   }) => _send(
     'POST',
     '/api/groups/$groupId/messages',
     memberId: memberId,
-    body: {'text': text},
+    body: {'encryptedPayload': encryptedPayload},
   );
+
+  Future<void> registerChatKey({
+    required String groupId,
+    required String memberId,
+    required String publicKey,
+  }) async {
+    await _send(
+      'PATCH',
+      '/api/groups/$groupId/members/me/key',
+      memberId: memberId,
+      body: {'publicKey': publicKey},
+    );
+  }
+
+  Future<void> updateLocation({
+    required String groupId,
+    required String memberId,
+    double? latitude,
+    double? longitude,
+  }) async {
+    await _send(
+      'PATCH',
+      '/api/groups/$groupId/location',
+      memberId: memberId,
+      body: latitude == null || longitude == null
+          ? {'enabled': false}
+          : {'latitude': latitude, 'longitude': longitude},
+      expectBody: false,
+    );
+  }
+
+  Future<Map<String, dynamic>> promoteToOfficer({
+    required String groupId,
+    required String memberId,
+    required String targetMemberId,
+  }) => _send(
+    'POST',
+    '/api/groups/$groupId/members/$targetMemberId/promote',
+    memberId: memberId,
+    body: const {},
+  );
+
+  Future<void> joinOfficerGroup({
+    required String groupId,
+    required String memberId,
+    required String officerId,
+  }) async {
+    await _send(
+      'PATCH',
+      '/api/groups/$groupId/members/me/officer',
+      memberId: memberId,
+      body: {'officerId': officerId},
+      expectBody: false,
+    );
+  }
 
   Future<Map<String, dynamic>> createPing({
     required String groupId,

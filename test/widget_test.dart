@@ -23,7 +23,7 @@ void main() {
     await tester.longPressAt(const Offset(200, 400));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sicherheitsmeldung'), findsOneWidget);
+    expect(find.text('Sicherheitsmeldung senden'), findsOneWidget);
     expect(find.text('Treffpunkt'), findsOneWidget);
     expect(find.text('Hilfe benötigt'), findsOneWidget);
     expect(find.text('Schließen'), findsOneWidget);
@@ -50,11 +50,11 @@ void main() {
 
     await tester.tap(find.byTooltip('Menü'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Gruppe finden'));
+    await tester.tap(find.text('Gruppe beitreten'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Gruppe finden'), findsOneWidget);
-    expect(find.text('Einladungscode'), findsOneWidget);
+    expect(find.text('Gruppe beitreten'), findsOneWidget);
+    expect(find.text('6-stelliger Code'), findsOneWidget);
     await tester.tap(find.text('Abbrechen'));
     await tester.pumpAndSettle();
   });

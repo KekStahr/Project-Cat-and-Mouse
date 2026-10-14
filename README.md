@@ -8,17 +8,19 @@ bestätigungspflichtige Sicherheitsmeldungen.
 
 ## Lokal ausprobieren
 
-Voraussetzung ist das Flutter SDK. Im Projektordner:
+Voraussetzung ist das Flutter SDK. Die Flutter-App läuft dabei lokal im
+Browser; Gruppen, Chat und Sicherheitsmeldungen werden mit der Render-API
+synchronisiert. Im Projektordner:
 
 ```powershell
 flutter pub get
-flutter run -d chrome
+flutter run -d edge --dart-define=API_BASE_URL=https://project-cat-and-mouse.onrender.com
 ```
 
 Oder die Web-Vorschau als lokalen Webserver im Heimnetz starten:
 
 ```powershell
-flutter run -d web-server --web-hostname 0.0.0.0 --web-port 8080
+flutter run -d web-server --web-hostname 0.0.0.0 --web-port 8080 --dart-define=API_BASE_URL=https://project-cat-and-mouse.onrender.com
 ```
 
 Rufe die im Terminal angezeigte lokale IP-Adresse mit Port `8080` auf einem
@@ -30,7 +32,7 @@ Für einen iPhone-Test kann Flutter die App direkt starten:
 
 ```powershell
 flutter devices
-flutter run -d <geraete-id>
+flutter run -d <geraete-id> --dart-define=API_BASE_URL=https://project-cat-and-mouse.onrender.com
 ```
 
 Ein iOS-Build benötigt macOS mit Xcode. Android kann mit installiertem Android
@@ -68,6 +70,48 @@ Browser-App unter einer eigenen `onrender.com`-Adresse bereit. Falls der
 API-Service eine andere Adresse hat, diese im Build Command hinter
 `API_BASE_URL=` einsetzen. Änderungen an der Oberfläche werden durch einen
 neuen Static-Site-Deploy veröffentlicht.
+
+### Aktuelle Karten-, Standort- und Chatfunktionen
+
+Die Karte verwendet OpenStreetMap ohne Google-API-Schlüssel. Die Daten sind
+offen, aber der öffentliche Kachelserver von OpenStreetMap garantiert keine
+unbegrenzte Nutzung. Für eine größere weltweite Veröffentlichung muss ein
+geeigneter Kachel-Anbieter oder eine eigene Karten-Infrastruktur verwendet
+werden.
+
+Die Standortfreigabe startet ausgeschaltet. Jedes Mitglied muss sie selbst in
+der Karte einschalten; dann wird nur der jeweils letzte Standort gespeichert.
+Beim Ausschalten wird er gelöscht, und nicht aktualisierte Positionen werden
+nach zwei Minuten nicht mehr angezeigt. Android und iOS können mit
+„Immer“-Berechtigung im Hintergrund teilen. Die Web-App kann den Standort nur
+teilen, solange die Browserseite aktiv ist. Eine iOS-Veröffentlichung mit
+Hintergrund-Standortfreigabe muss Apples Anforderungen an die Begründung dieser
+Berechtigung erfüllen.
+
+Der Gruppenersteller ist der rote General. Nur der General kann Soldaten zu
+Offizieren ernennen. Soldaten können einer bestehenden Offiziersgruppe
+beitreten, aber weder Offizier werden noch selbst eine Gruppe erstellen.
+Offiziersfarben bleiben gespeichert; ihre Soldaten erscheinen in derselben
+Farbe. Der Einladungscode kann später über das Kopiersymbol erneut angezeigt
+und kopiert werden.
+
+Neue Chatnachrichten werden auf den Geräten mit X25519/HKDF und AES-256-GCM
+verschlüsselt; der Server speichert nur Chiffretext und Empfängerumschläge.
+Neue Mitglieder können deshalb nur Nachrichten ab ihrem Beitritt lesen. Beim
+ersten Start der API mit dieser Version werden alte, unverschlüsselte
+Chatnachrichten gelöscht. Private Chat-Schlüssel liegen ausschließlich im
+sicheren Speicher des jeweiligen Geräts bzw. Browsers. Wird dieser Schlüssel
+gelöscht, kann der alte Verlauf nicht wiederhergestellt werden; ein anderes
+Gerät muss der Gruppe neu beitreten. Der Server sieht weiterhin Metadaten wie
+Absender, Empfänger, Zeitpunkte und Standort. Die Schlüssel werden über die API
+ausgetauscht und nicht unabhängig verifiziert; diese Prototyp-Implementierung
+ist daher kein Ersatz für ein unabhängig geprüftes E2EE-Protokoll oder eine
+vollständige Konten-/Identitätssicherung.
+
+Nach Änderungen diese Version **zuerst für den Render-API-Web-Service**
+deployen. Der API-Start migriert das Datenbankschema und löscht dabei alte
+Klartext-Chats. Danach die Render Static Site neu deployen. Alle Geräte müssen
+die neue App-Version laden, bevor sie wieder Chatnachrichten senden können.
 
 Für einen lokalen Client-Build:
 

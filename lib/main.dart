@@ -1,10 +1,15 @@
 import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'group_api.dart';
 import 'map.dart';
 import 'chat.dart';
+import 'chat_crypto.dart';
 import 'people.dart';
 
 void main() => runApp(const ResoApp());
@@ -40,12 +45,42 @@ class ResoApp extends StatelessWidget {
 }
 
 enum SafetyPing {
-  meetup('Treffpunkt', 'Gemeinsamer Treffpunkt', Icons.place_rounded, Color(0xFF82C8FF)),
-  help('Hilfe benötigt', 'Jemand braucht Unterstützung', Icons.health_and_safety, Color(0xFFFF7979)),
-  caution('Achtung', 'Bitte aufmerksam bleiben', Icons.warning_amber_rounded, Color(0xFFFFC46B)),
-  checkIn('Sicher angekommen', 'Kurze Rückmeldung geben', Icons.check_circle, Color(0xFF9BE3C0)),
-  regroup('Gruppe sammeln', 'Bitte zum Gruppenpunkt kommen', Icons.groups_rounded, Color(0xFFC3A1FF)),
-  sos('SOS NOTRUF', 'Kritische Gefahrenlage!', Icons.warning_rounded, Color(0xFFFF3B30));
+  meetup(
+    'Treffpunkt',
+    'Gemeinsamer Treffpunkt',
+    Icons.place_rounded,
+    Color(0xFF82C8FF),
+  ),
+  help(
+    'Hilfe benötigt',
+    'Jemand braucht Unterstützung',
+    Icons.health_and_safety,
+    Color(0xFFFF7979),
+  ),
+  caution(
+    'Achtung',
+    'Bitte aufmerksam bleiben',
+    Icons.warning_amber_rounded,
+    Color(0xFFFFC46B),
+  ),
+  checkIn(
+    'Sicher angekommen',
+    'Kurze Rückmeldung geben',
+    Icons.check_circle,
+    Color(0xFF9BE3C0),
+  ),
+  regroup(
+    'Gruppe sammeln',
+    'Bitte zum Gruppenpunkt kommen',
+    Icons.groups_rounded,
+    Color(0xFFC3A1FF),
+  ),
+  sos(
+    'SOS NOTRUF',
+    'Kritische Gefahrenlage!',
+    Icons.warning_rounded,
+    Color(0xFFFF3B30),
+  );
 
   const SafetyPing(this.label, this.description, this.icon, this.color);
   final String label;
@@ -59,14 +94,28 @@ class Participant {
     required this.id,
     required this.name,
     required this.online,
-    required this.organizer,
+    required this.role,
     required this.acknowledged,
+    required this.officerId,
+    required this.color,
+    required this.publicKey,
+    required this.latitude,
+    required this.longitude,
   });
   final String id;
   final String name;
   bool online;
-  final bool organizer;
+  final String role;
   bool acknowledged;
+  final String? officerId;
+  final String? color;
+  final String? publicKey;
+  final double? latitude;
+  final double? longitude;
+
+  bool get isGeneral => role == 'general';
+  bool get isOfficer => role == 'officer';
+  bool get isSoldier => role == 'soldier';
 }
 
 class ChatMessage {
@@ -90,6 +139,7 @@ class GroupHomePage extends StatefulWidget {
 
 class _GroupHomePageState extends State<GroupHomePage> {
   final _api = GroupApi();
+  final _chatCrypto = ChatCrypto();
   final _nameController = TextEditingController(text: 'Alex');
   final _joinController = TextEditingController();
   final _chatController = TextEditingController();
@@ -105,7 +155,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
   String? _memberId;
   String? _connectionError;
   Timer? _refreshTimer;
+  Timer? _locationHeartbeat;
+  StreamSubscription<Position>? _locationSubscription;
+  Position? _lastPosition;
   bool _refreshing = false;
+  bool _sharingLocation = false;
   int _selectedTab = 0;
   String _expiryChoice = '1 Stunde';
   bool _isLocked = false;
@@ -126,6 +180,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
       setState(() {});
       return;
     }
+    try {
+      await _api.updateLocation(groupId: _groupId!, memberId: _memberId!);
+    } catch (error) {
+      if (mounted) setState(() => _connectionError = error.toString());
+    }
     await _refreshGroup();
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 3),
@@ -141,38 +200,70 @@ class _GroupHomePageState extends State<GroupHomePage> {
     try {
       final data = await _api.fetchGroup(groupId: groupId, memberId: memberId);
       final group = data['group'] as Map<String, dynamic>;
+      final rawMembers = data['members'] as List<dynamic>;
+      final currentMember = rawMembers.cast<Map<String, dynamic>>().firstWhere(
+        (member) => member['id'] == memberId,
+      );
+      final publicKey = await _chatCrypto.initialize(
+        memberId,
+        registeredPublicKey: currentMember['public_key'] as String?,
+      );
+      if (currentMember['public_key'] == null) {
+        await _api.registerChatKey(
+          groupId: groupId,
+          memberId: memberId,
+          publicKey: publicKey,
+        );
+      }
       final ping = data['activePing'] as Map<String, dynamic>?;
       final pingId = ping?['id'] as String?;
+      final participants = rawMembers.map((item) {
+        final member = item as Map<String, dynamic>;
+        return Participant(
+          id: member['id'] as String,
+          name: member['name'] as String,
+          online: member['online'] as bool,
+          role: member['role'] as String,
+          acknowledged: member['acknowledged'] as bool,
+          officerId: member['officer_id'] as String?,
+          color: member['color'] as String?,
+          publicKey: member['id'] == memberId
+              ? publicKey
+              : member['public_key'] as String?,
+          latitude: member['latitude'] as double?,
+          longitude: member['longitude'] as double?,
+        );
+      }).toList();
+      final messages = <ChatMessage>[];
+      for (final item in data['messages'] as List<dynamic>) {
+        final message = item as Map<String, dynamic>;
+        final text = await _chatCrypto.decryptForMember(
+          payload: Map<String, dynamic>.from(
+            message['encrypted_payload'] as Map,
+          ),
+          groupId: groupId,
+          senderId: message['sender_id'] as String,
+          recipientId: memberId,
+        );
+        if (text == null) continue;
+        messages.add(
+          ChatMessage(
+            senderName: message['sender_name'] as String,
+            text: text,
+            mine: message['sender_id'] == memberId,
+          ),
+        );
+      }
       if (mounted) {
         setState(() {
           _groupName = group['name'] as String;
           _inviteCode = group['invite_code'] as String?;
           _participants
             ..clear()
-            ..addAll(
-              (data['members'] as List<dynamic>).map((item) {
-                final member = item as Map<String, dynamic>;
-                return Participant(
-                  id: member['id'] as String,
-                  name: member['name'] as String,
-                  online: member['online'] as bool,
-                  organizer: member['role'] == 'organizer',
-                  acknowledged: member['acknowledged'] as bool,
-                );
-              }),
-            );
+            ..addAll(participants);
           _messages
             ..clear()
-            ..addAll(
-              (data['messages'] as List<dynamic>).map((item) {
-                final message = item as Map<String, dynamic>;
-                return ChatMessage(
-                  senderName: message['sender_name'] as String,
-                  text: message['text'] as String,
-                  mine: message['sender_id'] == memberId,
-                );
-              }),
-            );
+            ..addAll(messages);
           _activePingId = pingId;
           _activePing = ping == null
               ? null
@@ -209,6 +300,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _locationHeartbeat?.cancel();
+    _locationSubscription?.cancel();
     _api.close();
     _nameController.dispose();
     _joinController.dispose();
@@ -223,10 +316,219 @@ class _GroupHomePageState extends State<GroupHomePage> {
       ..showSnackBar(SnackBar(content: Text(text)));
   }
 
+  Future<void> _setLocationSharing(bool enabled) async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null) {
+      _showNotice('Tritt zuerst einer Gruppe bei.');
+      return;
+    }
+    if (!enabled) {
+      await _locationSubscription?.cancel();
+      _locationSubscription = null;
+      _locationHeartbeat?.cancel();
+      _locationHeartbeat = null;
+      _lastPosition = null;
+      if (mounted) setState(() => _sharingLocation = false);
+      try {
+        await _api.updateLocation(groupId: groupId, memberId: memberId);
+      } catch (error) {
+        if (mounted) {
+          _showNotice(
+            'Standortfreigabe beendet, Server konnte Standort nicht löschen: $error',
+          );
+        }
+      }
+      return;
+    }
+
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      _showNotice('Bitte aktiviere die Standortdienste auf deinem Gerät.');
+      return;
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      _showNotice('Standortfreigabe wurde nicht erlaubt.');
+      return;
+    }
+    final mobilePlatform =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+    if (mobilePlatform && permission != LocationPermission.always) {
+      _showNotice(
+        'Für Hintergrund-Standortfreigabe erlaube „Immer“ in den App-Einstellungen.',
+      );
+      await Geolocator.openAppSettings();
+      return;
+    }
+
+    if (mounted) setState(() => _sharingLocation = true);
+    try {
+      final position = await Geolocator.getCurrentPosition();
+      _lastPosition = position;
+      await _publishLocation(position);
+      await _locationSubscription?.cancel();
+      _locationSubscription =
+          Geolocator.getPositionStream(locationSettings: _locationSettings)
+              .listen(
+                (position) {
+                  _lastPosition = position;
+                  unawaited(_publishLocation(position));
+                },
+                onError: (Object error) {
+                  if (mounted) {
+                    _showNotice(
+                      'Standort konnte nicht aktualisiert werden: $error',
+                    );
+                  }
+                },
+              );
+      _locationHeartbeat?.cancel();
+      _locationHeartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
+        final lastPosition = _lastPosition;
+        if (lastPosition != null) unawaited(_publishLocation(lastPosition));
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _sharingLocation = false);
+        _showNotice('Standort konnte nicht geteilt werden: $error');
+      }
+    }
+  }
+
+  Future<void> _publishLocation(Position position) async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null || !_sharingLocation) return;
+    try {
+      await _api.updateLocation(
+        groupId: groupId,
+        memberId: memberId,
+        latitude: position.latitude,
+        longitude: position.longitude,
+      );
+      await _refreshGroup();
+    } catch (error) {
+      if (mounted) _showNotice('Standort konnte nicht geteilt werden: $error');
+    }
+  }
+
+  LocationSettings get _locationSettings {
+    const accuracy = LocationAccuracy.high;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidSettings(
+        accuracy: accuracy,
+        distanceFilter: 15,
+        foregroundNotificationConfig: ForegroundNotificationConfig(
+          notificationTitle: 'Reşo teilt deinen Standort',
+          notificationText: 'Deine Gruppe kann deinen Standort sehen.',
+          enableWakeLock: true,
+          setOngoing: true,
+        ),
+      );
+    }
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      return AppleSettings(
+        accuracy: accuracy,
+        distanceFilter: 15,
+        activityType: ActivityType.fitness,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+      );
+    }
+    return const LocationSettings(accuracy: accuracy, distanceFilter: 15);
+  }
+
+  Future<void> _promoteToOfficer(Participant member) async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null) return;
+    try {
+      await _api.promoteToOfficer(
+        groupId: groupId,
+        memberId: memberId,
+        targetMemberId: member.id,
+      );
+      await _refreshGroup();
+      _showNotice('${member.name} ist jetzt Offizier.');
+    } catch (error) {
+      _showNotice(error.toString());
+    }
+  }
+
+  Future<void> _joinOfficerGroup(Participant officer) async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null) return;
+    try {
+      await _api.joinOfficerGroup(
+        groupId: groupId,
+        memberId: memberId,
+        officerId: officer.id,
+      );
+      await _refreshGroup();
+      _showNotice('Du bist der Gruppe von ${officer.name} beigetreten.');
+    } catch (error) {
+      _showNotice(error.toString());
+    }
+  }
+
+  Future<void> _showInviteCode() async {
+    final code = _inviteCode;
+    if (code == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Weitere Personen einladen'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Teile diesen Einladungscode mit deiner Gruppe:'),
+            const SizedBox(height: 12),
+            SelectableText(
+              code,
+              style: const TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 7,
+                color: _mint,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: code));
+              if (context.mounted) Navigator.pop(context);
+              _showNotice('Einladungscode kopiert.');
+            },
+            child: const Text('Kopieren'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fertig'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _createGroup() async {
     final groupController = TextEditingController(text: _groupName);
     final customHoursController = TextEditingController(text: '24');
-    final expiryOptions = ['5 Minuten', '10 Minuten', '1 Stunde', '2 Stunden', 'Individuell'];
+    final expiryOptions = [
+      '5 Minuten',
+      '10 Minuten',
+      '1 Stunde',
+      '2 Stunden',
+      'Individuell',
+    ];
     var expiry = _expiryChoice;
     final result = await showDialog<(String, String, int)>(
       context: context,
@@ -245,7 +547,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
                 initialValue: expiry,
                 decoration: const InputDecoration(labelText: 'Code gültig für'),
                 items: expiryOptions
-                    .map((option) => DropdownMenuItem(value: option, child: Text(option)))
+                    .map(
+                      (option) =>
+                          DropdownMenuItem(value: option, child: Text(option)),
+                    )
                     .toList(),
                 onChanged: (value) {
                   if (value != null) setDialogState(() => expiry = value);
@@ -257,17 +562,24 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   child: TextField(
                     controller: customHoursController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Gültigkeit in Stunden (1–168)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Gültigkeit in Stunden (1–168)',
+                    ),
                   ),
                 ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Abbrechen'),
+            ),
             FilledButton(
               onPressed: () {
                 final name = groupController.text.trim();
-                final customHours = int.tryParse(customHoursController.text.trim());
+                final customHours = int.tryParse(
+                  customHoursController.text.trim(),
+                );
                 if (name.isEmpty) return;
                 Navigator.pop(context, (name, expiry, customHours ?? 24));
               },
@@ -294,6 +606,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
         groupName: result.$1,
         memberName: _nameController.text.trim(),
         expiresInMinutes: durations[result.$2]!.inMinutes,
+        memberId: _memberId,
       );
       await _saveSession(response);
       final group = response['group'] as Map<String, dynamic>;
@@ -320,12 +633,20 @@ class _GroupHomePageState extends State<GroupHomePage> {
             const SizedBox(height: 14),
             SelectableText(
               _inviteCode ?? '',
-              style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold, letterSpacing: 7, color: _mint),
+              style: const TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 7,
+                color: _mint,
+              ),
             ),
           ],
         ),
         actions: [
-          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Fertig')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fertig'),
+          ),
         ],
       ),
     );
@@ -345,9 +666,13 @@ class _GroupHomePageState extends State<GroupHomePage> {
           decoration: const InputDecoration(labelText: '6-stelliger Code'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Abbrechen'),
+          ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, _joinController.text.trim()),
+            onPressed: () =>
+                Navigator.pop(context, _joinController.text.trim()),
             child: const Text('Beitreten'),
           ),
         ],
@@ -355,7 +680,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
     );
     if (!mounted || code == null || code.isEmpty) return;
     try {
-      final response = await _api.joinGroup(inviteCode: code, memberName: _nameController.text.trim());
+      final response = await _api.joinGroup(
+        inviteCode: code,
+        memberName: _nameController.text.trim(),
+      );
       await _saveSession(response);
       _showNotice('Erfolgreich beigetreten!');
     } catch (error) {
@@ -371,7 +699,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
       return;
     }
     try {
-      await _api.createPing(groupId: groupId, memberId: memberId, type: ping.name);
+      await _api.createPing(
+        groupId: groupId,
+        memberId: memberId,
+        type: ping.name,
+      );
       if (!mounted) return;
       setState(() => _selectedTab = 2);
       await _refreshGroup();
@@ -387,7 +719,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
     final pingId = _activePingId;
     if (groupId == null || memberId == null || pingId == null) return;
     try {
-      await _api.acknowledgePing(groupId: groupId, memberId: memberId, pingId: pingId);
+      await _api.acknowledgePing(
+        groupId: groupId,
+        memberId: memberId,
+        pingId: pingId,
+      );
       await _refreshGroup();
     } catch (error) {
       _showNotice(error.toString());
@@ -402,7 +738,26 @@ class _GroupHomePageState extends State<GroupHomePage> {
       return;
     }
     try {
-      await _api.sendMessage(groupId: groupId, memberId: memberId, text: text);
+      final publicKeys = <String, String>{
+        for (final member in _participants)
+          if (member.publicKey != null) member.id: member.publicKey!,
+      };
+      if (publicKeys.length != _participants.length) {
+        throw const GroupApiException(
+          'Chat-Schlüssel fehlen für Gruppenmitglieder. Bitte kurz warten und erneut versuchen.',
+        );
+      }
+      final encryptedPayload = await _chatCrypto.encryptForMembers(
+        text: text,
+        groupId: groupId,
+        senderId: memberId,
+        publicKeys: publicKeys,
+      );
+      await _api.sendMessage(
+        groupId: groupId,
+        memberId: memberId,
+        encryptedPayload: encryptedPayload,
+      );
       await _refreshGroup();
     } catch (error) {
       _showNotice(error.toString());
@@ -421,9 +776,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
               children: [
                 const Icon(Icons.lock_rounded, size: 64, color: _mint),
                 const SizedBox(height: 16),
-                const Text('App ist gesperrt', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const Text(
+                  'App ist gesperrt',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
-                const Text('Bitte entsperren, um Standort und Chat zu sehen.', textAlign: TextAlign.center, style: TextStyle(color: _muted)),
+                const Text(
+                  'Bitte entsperren, um Standort und Chat zu sehen.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: _muted),
+                ),
                 const SizedBox(height: 24),
                 FilledButton(
                   onPressed: () async {
@@ -453,8 +815,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     groupName: _groupName,
                     connectionError: _connectionError,
                     groupId: _groupId,
-                    participantCount: _participants.length,
-                    onlineCount: _participants.where((p) => p.online).length,
+                    members: _participants,
+                    currentMemberId: _memberId,
+                    isSharingLocation: _sharingLocation,
+                    onLocationSharingChanged: _setLocationSharing,
                     activePing: _activePing,
                     onPingSelected: _setPing,
                   ),
@@ -469,6 +833,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     memberId: _memberId,
                     searchController: _searchController,
                     onAcknowledge: _acknowledgePing,
+                    onPromoteToOfficer: _promoteToOfficer,
+                    onJoinOfficerGroup: _joinOfficerGroup,
                   ),
                 ],
               ),
@@ -494,13 +860,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
           child: const Icon(Icons.explore_rounded, color: _mint),
         ),
         const SizedBox(width: 10),
-        const Text('Reşo', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        const Text(
+          'Reşo',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+        ),
         const Spacer(),
         if (_inviteCode != null)
           IconButton(
             icon: const Icon(Icons.copy_rounded, size: 18, color: _mint),
-            tooltip: 'Einladungscode kopieren',
-            onPressed: () => _showNotice('Code: $_inviteCode'),
+            tooltip: 'Weitere Personen einladen',
+            onPressed: _showInviteCode,
           ),
         PopupMenuButton<String>(
           tooltip: 'Menü',
@@ -518,11 +887,21 @@ class _GroupHomePageState extends State<GroupHomePage> {
                 await prefs.setBool('reso.locked', true);
             }
           },
-          itemBuilder: (context) => const [
-            PopupMenuItem(value: 'create', child: Text('Gruppe erstellen')),
-            PopupMenuItem(value: 'join', child: Text('Gruppe beitreten')),
-            PopupMenuDivider(),
-            PopupMenuItem(value: 'lock', child: Text('App sperren (Sicherheit)')),
+          itemBuilder: (context) => [
+            if (_memberId == null ||
+                _participants.any(
+                  (member) => member.id == _memberId && member.isGeneral,
+                ))
+              const PopupMenuItem(
+                value: 'create',
+                child: Text('Gruppe erstellen'),
+              ),
+            const PopupMenuItem(value: 'join', child: Text('Gruppe beitreten')),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 'lock',
+              child: Text('App sperren (Sicherheit)'),
+            ),
           ],
         ),
       ],
@@ -532,7 +911,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
   Widget _bottomBar() => Container(
     decoration: BoxDecoration(
       color: _surface,
-      border: Border(top: BorderSide(color: Colors.white.withValues(alpha: .05))),
+      border: Border(
+        top: BorderSide(color: Colors.white.withValues(alpha: .05)),
+      ),
     ),
     child: NavigationBar(
       height: 68,
@@ -540,9 +921,21 @@ class _GroupHomePageState extends State<GroupHomePage> {
       selectedIndex: _selectedTab,
       onDestinationSelected: (index) => setState(() => _selectedTab = index),
       destinations: const [
-        NavigationDestination(icon: Icon(Icons.map_outlined), selectedIcon: Icon(Icons.map_rounded), label: 'Karte'),
-        NavigationDestination(icon: Icon(Icons.chat_bubble_outline_rounded), selectedIcon: Icon(Icons.chat_rounded), label: 'Chat'),
-        NavigationDestination(icon: Icon(Icons.people_outline_rounded), selectedIcon: Icon(Icons.people_rounded), label: 'Personen'),
+        NavigationDestination(
+          icon: Icon(Icons.map_outlined),
+          selectedIcon: Icon(Icons.map_rounded),
+          label: 'Karte',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.chat_bubble_outline_rounded),
+          selectedIcon: Icon(Icons.chat_rounded),
+          label: 'Chat',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.people_outline_rounded),
+          selectedIcon: Icon(Icons.people_rounded),
+          label: 'Personen',
+        ),
       ],
     ),
   );
