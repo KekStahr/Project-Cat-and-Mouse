@@ -58,11 +58,11 @@ und als Start Command `npm start`.
 
 In Render **New > Static Site** wählen, das GitHub-Repository und den Branch
 verbinden und als Root Directory das Repository-Hauptverzeichnis verwenden
-(Root Directory leer lassen). Flutter ist in der Build-Umgebung nicht
-vorinstalliert; dieser Build Command lädt das Flutter-SDK und baut die App:
+(Root Directory leer lassen). Dieser Build Command verwendet ein im Render-
+Cache bereits vorhandenes Flutter-SDK wieder und klont es nur, wenn es fehlt:
 
 ```sh
-git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$HOME/flutter" && export PATH="$HOME/flutter/bin:$PATH" && flutter config --no-analytics && flutter pub get && flutter build web --release --dart-define=API_BASE_URL=https://project-cat-and-mouse.onrender.com
+if [ ! -x "$HOME/flutter/bin/flutter" ]; then git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$HOME/flutter"; fi && export PATH="$HOME/flutter/bin:$PATH" && flutter config --no-analytics && flutter pub get && flutter build web --release --dart-define=API_BASE_URL=https://project-cat-and-mouse.onrender.com
 ```
 
 Als Publish Directory `build/web` eintragen. Nach dem Deploy stellt Render die
