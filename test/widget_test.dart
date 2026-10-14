@@ -15,6 +15,7 @@ void main() {
     expect(find.text('Karte'), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);
     expect(find.text('Personen'), findsOneWidget);
+    expect(find.text('Standort mit Gruppe teilen'), findsOneWidget);
   });
 
   testWidgets('opens the safety menu on a long press', (tester) async {

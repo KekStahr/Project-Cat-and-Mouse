@@ -160,6 +160,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
   Position? _lastPosition;
   bool _refreshing = false;
   bool _sharingLocation = false;
+  bool _editingName = false;
   int _selectedTab = 0;
   String _expiryChoice = '1 Stunde';
   bool _isLocked = false;
@@ -258,6 +259,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
         setState(() {
           _groupName = group['name'] as String;
           _inviteCode = group['invite_code'] as String?;
+          if (!_editingName) {
+            _nameController.text = currentMember['name'] as String;
+          }
           _participants
             ..clear()
             ..addAll(participants);
@@ -352,7 +356,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
     }
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
-      _showNotice('Standortfreigabe wurde nicht erlaubt.');
+      _showNotice(
+        kIsWeb
+            ? 'Safari meldet Standortzugriff verweigert. Erlaube Standort für diese Website in Safari → Einstellungen für diese Website → Standort und lade die App neu.'
+            : 'Standortfreigabe wurde nicht erlaubt. Prüfe die App-Berechtigung in den Geräteeinstellungen.',
+      );
       return;
     }
     final mobilePlatform =
@@ -369,7 +377,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
 
     if (mounted) setState(() => _sharingLocation = true);
     try {
-      final position = await Geolocator.getCurrentPosition();
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: _locationSettings,
+      );
       _lastPosition = position;
       await _publishLocation(position);
       await _locationSubscription?.cancel();
@@ -396,7 +406,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
     } catch (error) {
       if (mounted) {
         setState(() => _sharingLocation = false);
-        _showNotice('Standort konnte nicht geteilt werden: $error');
+        _showNotice(_locationErrorMessage(error));
       }
     }
   }
@@ -441,7 +451,41 @@ class _GroupHomePageState extends State<GroupHomePage> {
         showBackgroundLocationIndicator: true,
       );
     }
-    return const LocationSettings(accuracy: accuracy, distanceFilter: 15);
+    return const LocationSettings(
+      accuracy: accuracy,
+      distanceFilter: 15,
+      timeLimit: Duration(seconds: 20),
+    );
+  }
+
+  Future<void> _requestLocation() async {
+    if (_sharingLocation) {
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          locationSettings: _locationSettings,
+        );
+        _lastPosition = position;
+        await _publishLocation(position);
+      } catch (error) {
+        if (mounted) _showNotice(_locationErrorMessage(error));
+      }
+      return;
+    }
+    await _setLocationSharing(true);
+  }
+
+  String _locationErrorMessage(Object error) {
+    final message = error.toString();
+    if (message.toLowerCase().contains('permission') ||
+        message.toLowerCase().contains('denied')) {
+      return kIsWeb
+          ? 'Safari hat keinen Standortzugriff. Erlaube Standort für diese Website in Safari → Einstellungen für diese Website und lade die App neu.'
+          : 'Kein Standortzugriff. Erlaube der App den Standortzugriff in den Geräteeinstellungen.';
+    }
+    if (message.toLowerCase().contains('timeout')) {
+      return 'Standortabfrage dauerte zu lange. Prüfe GPS/Standortdienste und versuche es erneut.';
+    }
+    return 'Standortabfrage fehlgeschlagen: $message';
   }
 
   Future<void> _promoteToOfficer(Participant member) async {
@@ -517,6 +561,67 @@ class _GroupHomePageState extends State<GroupHomePage> {
         ],
       ),
     );
+  }
+
+  Future<void> _editName() async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null) {
+      _showNotice('Tritt zuerst einer Gruppe bei.');
+      return;
+    }
+    final currentName = _participants
+        .where((member) => member.id == memberId)
+        .map((member) => member.name)
+        .firstOrNull;
+    _nameController.text = currentName ?? _nameController.text;
+    _editingName = true;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Namen ändern'),
+        content: TextField(
+          controller: _nameController,
+          autofocus: true,
+          maxLength: 24,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Dein Name in der Gruppe',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, _nameController.text.trim()),
+            child: const Text('Speichern'),
+          ),
+        ],
+      ),
+    );
+    _editingName = false;
+    if (!mounted || name == null) return;
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty || trimmedName.length > 24) {
+      _showNotice('Der Name muss 1 bis 24 Zeichen lang sein.');
+      return;
+    }
+    try {
+      await _api.updateName(
+        groupId: groupId,
+        memberId: memberId,
+        name: trimmedName,
+      );
+      _nameController.text = trimmedName;
+      await _refreshGroup();
+      if (mounted) _showNotice('Name wurde für die Gruppe aktualisiert.');
+    } catch (error) {
+      if (mounted) _showNotice(error.toString());
+    }
   }
 
   Future<void> _createGroup() async {
@@ -819,6 +924,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     currentMemberId: _memberId,
                     isSharingLocation: _sharingLocation,
                     onLocationSharingChanged: _setLocationSharing,
+                    onRequestLocation: _requestLocation,
                     activePing: _activePing,
                     onPingSelected: _setPing,
                   ),
@@ -877,6 +983,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
           color: _surfaceRaised,
           onSelected: (value) async {
             switch (value) {
+              case 'name':
+                _editName();
               case 'create':
                 _createGroup();
               case 'join':
@@ -888,6 +996,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
             }
           },
           itemBuilder: (context) => [
+            if (_memberId != null)
+              const PopupMenuItem(value: 'name', child: Text('Namen ändern')),
             if (_memberId == null ||
                 _participants.any(
                   (member) => member.id == _memberId && member.isGeneral,

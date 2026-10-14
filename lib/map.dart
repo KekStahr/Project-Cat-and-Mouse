@@ -14,6 +14,7 @@ class MapScreen extends StatefulWidget {
     required this.currentMemberId,
     required this.isSharingLocation,
     required this.onLocationSharingChanged,
+    required this.onRequestLocation,
     required this.activePing,
     required this.onPingSelected,
   });
@@ -25,6 +26,7 @@ class MapScreen extends StatefulWidget {
   final String? currentMemberId;
   final bool isSharingLocation;
   final ValueChanged<bool> onLocationSharingChanged;
+  final Future<void> Function() onRequestLocation;
   final SafetyPing? activePing;
   final ValueChanged<SafetyPing> onPingSelected;
 
@@ -34,6 +36,20 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   final _mapController = MapController();
+  bool _centerWhenLocated = false;
+
+  @override
+  void didUpdateWidget(covariant MapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_centerWhenLocated) return;
+    final member = _currentMember;
+    if (member?.latitude == null || member?.longitude == null) return;
+    _centerWhenLocated = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(member!.latitude!, member.longitude!), 16);
+    });
+  }
 
   Participant? get _currentMember {
     for (final member in widget.members) {
@@ -42,14 +58,27 @@ class _MapScreenState extends State<MapScreen> {
     return null;
   }
 
-  void _centerOnMe() {
+  Future<void> _centerOnMe() async {
     final member = _currentMember;
     if (member?.latitude == null || member?.longitude == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Dein Standort ist noch nicht verfügbar.'),
-        ),
-      );
+      _centerWhenLocated = true;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(content: Text('Standort wird abgefragt …')),
+        );
+      try {
+        await widget.onRequestLocation();
+      } catch (error) {
+        if (mounted) {
+          _centerWhenLocated = false;
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              SnackBar(content: Text('Standortabfrage fehlgeschlagen: $error')),
+            );
+        }
+      }
       return;
     }
     _mapController.move(LatLng(member!.latitude!, member.longitude!), 16);
@@ -267,8 +296,8 @@ class _MapScreenState extends State<MapScreen> {
             bottom: widget.activePing == null ? 42 : 100,
             child: FloatingActionButton.small(
               heroTag: 'center-map-on-me',
-              tooltip: 'Auf meinen Standort zentrieren',
-              onPressed: _centerOnMe,
+              tooltip: 'Standort abfragen und Karte zentrieren',
+              onPressed: () => _centerOnMe(),
               child: const Icon(Icons.my_location_rounded),
             ),
           ),
