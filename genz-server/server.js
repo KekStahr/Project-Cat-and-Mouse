@@ -306,6 +306,24 @@ async function start() {
     if (!process.env.DATABASE_URL) {
         throw new Error("DATABASE_URL muss konfiguriert sein.");
     }
+
+    // Warten/Wiederholen, falls die Render-Datenbank noch aus dem Schlafmodus aufwacht
+    let connected = false;
+    for (let i = 1; i <= 5; i++) {
+        try {
+            await pool.query("SELECT 1");
+            connected = true;
+            break;
+        } catch (err) {
+            console.log(`Warte auf Datenbank (Versuch ${i}/5)...`);
+            await new Promise((resolve) => setTimeout(resolve, 3000)); // 3 Sekunden warten
+        }
+    }
+
+    if (!connected) {
+        throw new Error("Konnte keine Verbindung zur Datenbank herstellen.");
+    }
+
     await pool.query(schema);
     const port = Number(process.env.PORT) || 3000;
     app.listen(port, "0.0.0.0", () => {
