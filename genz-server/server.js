@@ -303,35 +303,43 @@ app.use((error, _req, res, _next) => {
 });
 
 async function start() {
+    const port = Number(process.env.PORT) || 3000;
+
+    // 1. Server SOFORT starten, damit Render den offenen Port direkt erkennt
+    app.listen(port, "0.0.0.0", () => {
+        console.log(`API gestartet auf Port ${port}`);
+    });
+
     if (!process.env.DATABASE_URL) {
-        throw new Error("DATABASE_URL muss konfiguriert sein.");
+        console.error("DATABASE_URL muss konfiguriert sein.");
+        return;
     }
 
-    // Warten/Wiederholen, falls die Render-Datenbank noch aus dem Schlafmodus aufwacht
+    // 2. Im Hintergrund auf die Datenbank warten
     let connected = false;
     for (let i = 1; i <= 5; i++) {
         try {
             await pool.query("SELECT 1");
             connected = true;
+            console.log("Erfolgreich mit der Datenbank verbunden!");
             break;
         } catch (err) {
-            console.log(`Warte auf Datenbank (Versuch ${i}/5)...`);
+            console.log(`Warte auf Datenbank (Versuch ${i}/5)... Fehler:`, err.message);
             await new Promise((resolve) => setTimeout(resolve, 3000)); // 3 Sekunden warten
         }
     }
 
     if (!connected) {
-        throw new Error("Konnte keine Verbindung zur Datenbank herstellen.");
+        console.error("Konnte keine Verbindung zur Datenbank herstellen. Bitte DATABASE_URL und DATABASE_SSL prüfen.");
+        return;
     }
 
-    await pool.query(schema);
-    const port = Number(process.env.PORT) || 3000;
-    app.listen(port, "0.0.0.0", () => {
-        console.log(`API gestartet auf Port ${port}`);
-    });
+    try {
+        await pool.query(schema);
+        console.log("Datenbank-Schema erfolgreich initialisiert.");
+    } catch (err) {
+        console.error("Fehler beim Erstellen des Tabellen-Schemas:", err);
+    }
 }
 
-start().catch((error) => {
-    console.error("Serverstart fehlgeschlagen:", error);
-    process.exit(1);
-});
+start();
