@@ -61,6 +61,8 @@ const schema = `
         type text NOT NULL,
         latitude double precision,
         longitude double precision,
+        target_member_id uuid REFERENCES members(id) ON DELETE SET NULL,
+        target_scope text,
         created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS acknowledgements (
@@ -83,6 +85,9 @@ const schema = `
     ALTER TABLE members ADD COLUMN IF NOT EXISTS location_updated_at timestamptz;
     ALTER TABLE pings ADD COLUMN IF NOT EXISTS latitude double precision;
     ALTER TABLE pings ADD COLUMN IF NOT EXISTS longitude double precision;
+    ALTER TABLE pings ADD COLUMN IF NOT EXISTS target_member_id uuid
+        REFERENCES members(id) ON DELETE SET NULL;
+    ALTER TABLE pings ADD COLUMN IF NOT EXISTS target_scope text;
     ALTER TABLE groups ADD COLUMN IF NOT EXISTS invite_expires_at timestamptz;
     ALTER TABLE groups ALTER COLUMN invite_code TYPE text;
     ALTER TABLE groups ALTER COLUMN invite_code DROP NOT NULL;
@@ -376,20 +381,17 @@ app.get("/api/groups/:groupId", async (req, res) => {
         return res.status(404).json({ error: "Group has expired or was deleted." });
     }
     const ping = await pool.query(
-           `SELECT p.id, p.type, p.latitude, p.longitude, p.created_at,
-               sender.name AS sender_name,
+           `SELECT p.id, p.type, p.latitude, p.longitude, p.target_member_id,
+                             p.target_scope, p.created_at, sender.id AS sender_id,
+                         sender.name AS sender_name, sender.role AS sender_role,
              COUNT(a.member_id)::int AS acknowledged_count,
              (SELECT COUNT(*)::int FROM members WHERE group_id = $1) AS member_count
          FROM pings p
          JOIN members sender ON sender.id = p.sender_id AND sender.group_id = p.group_id
          LEFT JOIN acknowledgements a ON a.ping_id = p.id
          WHERE p.group_id = $1
-         GROUP BY p.id, sender.name
+         GROUP BY p.id, sender.id, sender.name, sender.role
          HAVING p.created_at > now() - interval '10 minutes'
-            AND (p.created_at > now() - interval '3 minutes'
-                 OR COUNT(a.member_id) < CEIL(
-                     (SELECT COUNT(*) FROM members WHERE group_id = $1) * 0.8
-                 ))
          ORDER BY p.created_at DESC LIMIT 1`,
         [req.params.groupId],
     );
@@ -686,6 +688,10 @@ app.post("/api/groups/:groupId/pings", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
     const type = inputText(req.body.type, 20);
+    const targetMemberId = req.body.targetMemberId ?? null;
+    const targetScope = req.body.targetScope == null
+        ? "all"
+        : inputText(req.body.targetScope, 20);
     if (!["meetup", "help", "caution", "checkIn", "regroup"].includes(type)) {
         return badRequest(res, "Unknown safety alert.");
     }
@@ -701,14 +707,48 @@ app.post("/api/groups/:groupId/pings", async (req, res) => {
     ) {
         return badRequest(res, "Ping coordinates are invalid.");
     }
+    if (! ["all", "officers", "soldiers"].includes(targetScope)) {
+        return badRequest(res, "Ping target scope is invalid.");
+    }
+    if (member.role === "officer" && targetScope === "all") {
+        return badRequest(res, "Officers must choose officers or soldiers as the target.");
+    }
+    if (targetMemberId !== null) {
+        if (member.role !== "general") {
+            return res.status(403).json({ error: "Only the General can target a specific officer." });
+        }
+        if (
+            typeof targetMemberId !== "string" ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetMemberId)
+        ) {
+            return badRequest(res, "Ping target member is invalid.");
+        }
+        const target = await pool.query(
+            "SELECT id, role FROM members WHERE id = $1 AND group_id = $2",
+            [targetMemberId, req.params.groupId],
+        );
+        if (target.rowCount === 0 || target.rows[0].role !== "officer") {
+            return badRequest(res, "Ping target must be an officer in this group.");
+        }
+    }
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
         const ping = await client.query(
-            `INSERT INTO pings(group_id, sender_id, type, latitude, longitude)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, type, latitude, longitude, created_at`,
-            [req.params.groupId, member.id, type, latitude ?? null, longitude ?? null],
+            `INSERT INTO pings(group_id, sender_id, type, latitude, longitude,
+                               target_member_id, target_scope)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, type, latitude, longitude, target_member_id,
+                       target_scope, created_at`,
+            [
+                req.params.groupId,
+                member.id,
+                type,
+                latitude ?? null,
+                longitude ?? null,
+                targetMemberId,
+                targetScope,
+            ],
         );
         await client.query("COMMIT");
         return res.status(201).json(ping.rows[0]);

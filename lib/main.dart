@@ -93,6 +93,10 @@ class ActivePing {
     required this.memberCount,
     this.latitude,
     this.longitude,
+    this.senderId,
+    this.senderRole,
+    this.targetMemberId,
+    this.targetScope,
   });
 
   final String id;
@@ -103,6 +107,10 @@ class ActivePing {
   final int memberCount;
   final double? latitude;
   final double? longitude;
+  final String? senderId;
+  final String? senderRole;
+  final String? targetMemberId;
+  final String? targetScope;
 
   bool get isNew =>
       DateTime.now().difference(createdAt.toLocal()) <
@@ -119,11 +127,15 @@ class PingSelection {
     required this.type,
     required this.latitude,
     required this.longitude,
+    this.targetMemberId,
+    this.targetScope = 'all',
   });
 
   final SafetyPing type;
   final double latitude;
   final double longitude;
+  final String? targetMemberId;
+  final String targetScope;
 }
 
 class Participant {
@@ -354,6 +366,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
                 orElse: () => SafetyPing.caution,
               ),
               senderName: ping['sender_name'] as String? ?? 'Group member',
+              senderId: ping['sender_id'] as String?,
+              senderRole: ping['sender_role'] as String?,
               createdAt: DateTime.parse(ping['created_at'] as String),
               acknowledgedCount:
                   (ping['acknowledged_count'] as num?)?.toInt() ??
@@ -369,6 +383,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
               longitude:
                   (ping['longitude'] as num?)?.toDouble() ??
                   (ping['id'] == _localPingId ? _localPingLongitude : null),
+              targetMemberId: ping['target_member_id'] as String?,
+              targetScope: ping['target_scope'] as String?,
             );
       final participants = rawMembers.map((item) {
         final member = item as Map<String, dynamic>;
@@ -1168,6 +1184,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
         type: selection.type.name,
         latitude: selection.latitude,
         longitude: selection.longitude,
+        targetMemberId: selection.targetMemberId,
+        targetScope: selection.targetScope,
       );
       _localPingId = createdPing['id'] as String?;
       _localPingLatitude = selection.latitude;

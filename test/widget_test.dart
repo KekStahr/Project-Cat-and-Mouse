@@ -8,6 +8,50 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  Participant testMember(
+    String id,
+    String name,
+    String role, {
+    String? officerId,
+  }) => Participant(
+    id: id,
+    name: name,
+    online: true,
+    role: role,
+    acknowledged: false,
+    officerId: officerId,
+    color: null,
+    publicKey: null,
+    latitude: null,
+    longitude: null,
+  );
+
+  Widget pingMap({
+    required List<Participant> members,
+    required String currentMemberId,
+    required ValueChanged<PingSelection> onPingSelected,
+  }) => MaterialApp(
+    home: Scaffold(
+      body: MapScreen(
+        groupName: 'Test group',
+        connectionError: null,
+        groupId: 'group-1',
+        members: members,
+        currentMemberId: currentMemberId,
+        isSharingLocation: false,
+        onLocationSharingChanged: (_) {},
+        onRequestLocation: () async {},
+        activePing: null,
+        onPingSelected: onPingSelected,
+        onAcknowledge: () {},
+        currentIsGeneral: false,
+        onPromoteMember: (_) {},
+        onKickMember: (_) {},
+        onMessageMember: (_) {},
+      ),
+    ),
+  );
+
   testWidgets('shows the group map and navigation', (tester) async {
     await tester.pumpWidget(const ResoApp());
     await tester.pumpAndSettle();
@@ -15,6 +59,7 @@ void main() {
     expect(find.text('Reşo'), findsOneWidget);
     expect(find.text('No group'), findsOneWidget);
     expect(find.text('No group connected'), findsOneWidget);
+    expect(find.text('Kein aktiver Ping'), findsOneWidget);
     expect(find.byTooltip('Emergency SOS'), findsNothing);
     expect(find.text('Map'), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);
@@ -32,6 +77,77 @@ void main() {
     expect(find.text('Meetup'), findsOneWidget);
     expect(find.text('Help needed'), findsOneWidget);
     expect(find.text('Close'), findsOneWidget);
+  });
+
+  testWidgets('General can target one officer with a ping', (tester) async {
+    PingSelection? selection;
+    await tester.pumpWidget(
+      pingMap(
+        members: [
+          testMember('general-1', 'General', 'general'),
+          testMember('officer-1', 'Officer Lee', 'officer'),
+        ],
+        currentMemberId: 'general-1',
+        onPingSelected: (value) => selection = value,
+      ),
+    );
+    await tester.longPressAt(const Offset(200, 400));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Target officer (optional)'), findsOneWidget);
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Officer Lee').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Meetup'));
+    await tester.pumpAndSettle();
+
+    expect(selection?.targetMemberId, 'officer-1');
+    expect(selection?.targetScope, 'all');
+  });
+
+  testWidgets('Officer can select only one recipient scope', (tester) async {
+    PingSelection? selection;
+    await tester.pumpWidget(
+      pingMap(
+        members: [
+          testMember('officer-1', 'Officer Lee', 'officer'),
+          testMember(
+            'soldier-1',
+            'Soldier Kim',
+            'soldier',
+            officerId: 'officer-1',
+          ),
+        ],
+        currentMemberId: 'officer-1',
+        onPingSelected: (value) => selection = value,
+      ),
+    );
+    await tester.longPressAt(const Offset(200, 400));
+    await tester.pumpAndSettle();
+
+    final fellowOfficers = tester.widget<ChoiceChip>(
+      find.widgetWithText(ChoiceChip, 'Fellow officers'),
+    );
+    expect(fellowOfficers.selected, isTrue);
+    await tester.tap(find.text('My soldiers'));
+    await tester.pumpAndSettle();
+    final mySoldiers = tester.widget<ChoiceChip>(
+      find.widgetWithText(ChoiceChip, 'My soldiers'),
+    );
+    expect(mySoldiers.selected, isTrue);
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.widgetWithText(ChoiceChip, 'Fellow officers'),
+          )
+          .selected,
+      isFalse,
+    );
+    await tester.tap(find.text('Meetup'));
+    await tester.pumpAndSettle();
+    expect(selection?.targetScope, 'soldiers');
+    expect(selection?.targetMemberId, isNull);
   });
 
   testWidgets('opens the remote group creation dialog', (tester) async {
@@ -164,6 +280,7 @@ void main() {
 
     expect(find.text('Alex · Meetup'), findsOneWidget);
     expect(find.text('NEW'), findsOneWidget);
+    expect(find.text('Roger: 1 / 4 Personen'), findsOneWidget);
     expect(find.text('Ping: Meetup'), findsOneWidget);
     expect(find.textContaining('Bestätigt 1/4'), findsOneWidget);
     await tester.tap(find.text('Roger'));

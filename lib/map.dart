@@ -144,6 +144,49 @@ class _MapScreenState extends State<MapScreen>
     return Color(int.parse(hex.substring(1), radix: 16) | 0xFF000000);
   }
 
+  String _pingInstruction(ActivePing ping) {
+    final current = _currentMember;
+    if (ping.targetMemberId != null) {
+      if (ping.targetMemberId == widget.currentMemberId) {
+        final sender = ping.senderRole == 'general'
+            ? 'General'
+            : ping.senderName;
+        return ping.type == SafetyPing.meetup
+            ? '$sender tells you to move here'
+            : '$sender directs you: ${ping.type.label}';
+      }
+      final target = widget.members
+          .where((member) => member.id == ping.targetMemberId)
+          .firstOrNull;
+      return 'Ping intended for ${target?.name ?? 'another officer'}';
+    }
+    if (ping.targetScope == 'officers') {
+      return current?.isOfficer == true
+          ? '${ping.senderName} · For fellow officers: ${ping.type.label}'
+          : 'Ping intended for fellow officers';
+    }
+    if (ping.targetScope == 'soldiers') {
+      final isMySquad =
+          current?.isSoldier == true && current?.officerId == ping.senderId;
+      return isMySquad
+          ? '${ping.senderName} · Your squad: ${ping.type.label}'
+          : 'Ping intended for another squad';
+    }
+    return '${ping.senderName} · ${ping.type.label}';
+  }
+
+  bool _isPingForCurrentMember(ActivePing ping) {
+    final current = _currentMember;
+    if (ping.targetMemberId != null) {
+      return ping.targetMemberId == widget.currentMemberId;
+    }
+    if (ping.targetScope == 'officers') return current?.isOfficer == true;
+    if (ping.targetScope == 'soldiers') {
+      return current?.isSoldier == true && current?.officerId == ping.senderId;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final current = _currentMember;
@@ -394,6 +437,38 @@ class _MapScreenState extends State<MapScreen>
             ),
           ),
           Positioned(
+            top: 12,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xF2121B26),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color:
+                        widget.activePing?.type.color ??
+                        const Color(0xFF9BE3C0),
+                    width: 1.5,
+                  ),
+                ),
+                child: Text(
+                  widget.activePing == null
+                      ? 'Kein aktiver Ping'
+                      : 'Roger: ${widget.activePing!.acknowledgedCount} / ${widget.activePing!.memberCount} Personen',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
             right: 14,
             bottom: widget.activePing == null ? 42 : 148,
             child: FloatingActionButton.small(
@@ -461,7 +536,7 @@ class _MapScreenState extends State<MapScreen>
                             children: [
                               Expanded(
                                 child: Text(
-                                  '${widget.activePing!.senderName} · ${widget.activePing!.type.label}',
+                                  _pingInstruction(widget.activePing!),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -508,12 +583,18 @@ class _MapScreenState extends State<MapScreen>
                     ),
                     const SizedBox(width: 9),
                     FilledButton.tonal(
-                      onPressed: widget.onAcknowledge,
+                      onPressed: _isPingForCurrentMember(widget.activePing!)
+                          ? widget.onAcknowledge
+                          : null,
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         minimumSize: const Size(62, 40),
                       ),
-                      child: const Text('Roger'),
+                      child: Text(
+                        _isPingForCurrentMember(widget.activePing!)
+                            ? 'Roger'
+                            : 'Not for me',
+                      ),
                     ),
                   ],
                 ),
@@ -525,17 +606,16 @@ class _MapScreenState extends State<MapScreen>
   }
 
   void _showPingMenu(BuildContext context, LatLng point) {
+    final current = _currentMember;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) => _PingPicker(
-        onSelected: (ping) => widget.onPingSelected(
-          PingSelection(
-            type: ping,
-            latitude: point.latitude,
-            longitude: point.longitude,
-          ),
-        ),
+        point: point,
+        isGeneral: current?.isGeneral ?? false,
+        isOfficer: current?.isOfficer ?? false,
+        officers: widget.members.where((member) => member.isOfficer).toList(),
+        onSelected: widget.onPingSelected,
       ),
     );
   }
@@ -586,9 +666,28 @@ class _MapScreenState extends State<MapScreen>
   }
 }
 
-class _PingPicker extends StatelessWidget {
-  const _PingPicker({required this.onSelected});
-  final ValueChanged<SafetyPing> onSelected;
+class _PingPicker extends StatefulWidget {
+  const _PingPicker({
+    required this.point,
+    required this.isGeneral,
+    required this.isOfficer,
+    required this.officers,
+    required this.onSelected,
+  });
+
+  final LatLng point;
+  final bool isGeneral;
+  final bool isOfficer;
+  final List<Participant> officers;
+  final ValueChanged<PingSelection> onSelected;
+
+  @override
+  State<_PingPicker> createState() => _PingPickerState();
+}
+
+class _PingPickerState extends State<_PingPicker> {
+  String _targetScope = 'officers';
+  String _selectedOfficerId = '';
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -607,6 +706,44 @@ class _PingPicker extends StatelessWidget {
               'Send a safety alert',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
             ),
+            if (widget.isGeneral) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedOfficerId,
+                decoration: const InputDecoration(
+                  labelText: 'Target officer (optional)',
+                ),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('All members')),
+                  for (final officer in widget.officers)
+                    DropdownMenuItem(
+                      value: officer.id,
+                      child: Text(officer.name),
+                    ),
+                ],
+                onChanged: (value) =>
+                    setState(() => _selectedOfficerId = value ?? ''),
+              ),
+            ] else if (widget.isOfficer) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Fellow officers'),
+                    selected: _targetScope == 'officers',
+                    onSelected: (_) =>
+                        setState(() => _targetScope = 'officers'),
+                  ),
+                  ChoiceChip(
+                    label: const Text('My soldiers'),
+                    selected: _targetScope == 'soldiers',
+                    onSelected: (_) =>
+                        setState(() => _targetScope = 'soldiers'),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 18),
             Wrap(
               spacing: 9,
@@ -622,7 +759,21 @@ class _PingPicker extends StatelessWidget {
                         borderRadius: BorderRadius.circular(17),
                         onTap: () {
                           Navigator.pop(context);
-                          onSelected(ping);
+                          widget.onSelected(
+                            PingSelection(
+                              type: ping,
+                              latitude: widget.point.latitude,
+                              longitude: widget.point.longitude,
+                              targetMemberId:
+                                  widget.isGeneral &&
+                                      _selectedOfficerId.isNotEmpty
+                                  ? _selectedOfficerId
+                                  : null,
+                              targetScope: widget.isOfficer
+                                  ? _targetScope
+                                  : 'all',
+                            ),
+                          );
                         },
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
