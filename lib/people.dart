@@ -61,7 +61,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
           child: Row(
             children: [
               Text(
-                'Personen (${widget.participants.length})',
+                'People (${widget.participants.length})',
                 style: const TextStyle(
                   fontSize: 21,
                   fontWeight: FontWeight.w700,
@@ -82,8 +82,8 @@ class _PeopleScreenState extends State<PeopleScreen> {
                 icon: const Icon(Icons.shield_outlined),
                 label: Text(
                   currentOfficer == null
-                      ? 'Offiziersgruppe wählen'
-                      : 'Gruppe: ${currentOfficer.name}',
+                      ? 'Choose an officer group'
+                      : 'Group: ${currentOfficer.name}',
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -96,7 +96,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
-              hintText: 'Person suchen',
+              hintText: 'Search by name',
               filled: true,
               fillColor: const Color(0xFF121B26),
               border: OutlineInputBorder(
@@ -107,86 +107,96 @@ class _PeopleScreenState extends State<PeopleScreen> {
           ),
         ),
         Expanded(
-          child: ListView.separated(
+          child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: visible.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 7),
-            itemBuilder: (context, index) {
-              final member = visible[index];
-              final awaiting =
-                  widget.activePing != null && !member.acknowledged;
-              final isMe = member.id == widget.memberId;
-              final color = _memberColor(member, officers);
-
-              return Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: awaiting
-                      ? const Color(0xFF351F24)
-                      : const Color(0xFF121B26),
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                child: Row(
+            children: [
+              for (final (role, label) in [
+                ('general', 'General'),
+                ('officer', 'Officers'),
+                ('soldier', 'Soldiers'),
+              ])
+                ExpansionTile(
+                  key: PageStorageKey<String>('people-$role'),
+                  title: Text(
+                    '$label (${visible.where((m) => m.role == role).length})',
+                  ),
                   children: [
-                    CircleAvatar(
-                      backgroundColor: color.withValues(alpha: .22),
-                      child: Text(
-                        member.name.characters.first.toUpperCase(),
-                        style: TextStyle(color: color),
-                      ),
-                    ),
-                    const SizedBox(width: 11),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            member.name,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            '${_roleName(member.role)} · ${member.online ? 'Online' : 'Offline'}',
-                            style: const TextStyle(
-                              color: Color(0xFF8B9AAA),
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (me?.isGeneral == true && member.isSoldier && !isMe)
-                      IconButton(
-                        tooltip: 'Zum Offizier ernennen',
-                        onPressed: () => widget.onPromoteToOfficer(member),
-                        icon: const Icon(
-                          Icons.military_tech_rounded,
-                          color: Color(0xFFFFC46B),
-                        ),
-                      )
-                    else if (awaiting && isMe)
-                      FilledButton.tonal(
-                        onPressed: widget.onAcknowledge,
-                        child: const Text('Bestätigen'),
-                      )
-                    else if (awaiting)
-                      const Text(
-                        'Ausstehend',
-                        style: TextStyle(
-                          color: Color(0xFFFF7979),
-                          fontSize: 11,
-                        ),
-                      ),
+                    for (final member in visible.where((m) => m.role == role))
+                      _memberCard(member, me, officers),
                   ],
                 ),
-              );
-            },
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  Widget _memberCard(
+    Participant member,
+    Participant? me,
+    Map<String, Participant> officers,
+  ) {
+    final awaiting = widget.activePing != null && !member.acknowledged;
+    final isMe = member.id == widget.memberId;
+    final color = _memberColor(member, officers);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
+      decoration: BoxDecoration(
+        color: awaiting ? const Color(0xFF351F24) : const Color(0xFF121B26),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: color.withValues(alpha: .22),
+            child: Text(
+              member.name.characters.first.toUpperCase(),
+              style: TextStyle(color: color),
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  member.name,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${_roleName(member.role)} · ${member.online ? 'Online' : 'Offline'}',
+                  style: const TextStyle(
+                    color: Color(0xFF8B9AAA),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (me?.isGeneral == true && member.isSoldier && !isMe)
+            IconButton(
+              tooltip: 'Promote to officer',
+              onPressed: () => widget.onPromoteToOfficer(member),
+              icon: const Icon(
+                Icons.military_tech_rounded,
+                color: Color(0xFFFFC46B),
+              ),
+            )
+          else if (awaiting && isMe)
+            FilledButton.tonal(
+              onPressed: widget.onAcknowledge,
+              child: const Text('Acknowledge'),
+            )
+          else if (awaiting)
+            const Text(
+              'Pending',
+              style: TextStyle(color: Color(0xFFFF7979), fontSize: 11),
+            ),
+        ],
+      ),
     );
   }
 
@@ -202,7 +212,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
           children: [
             const ListTile(
               title: Text(
-                'Offiziersgruppe beitreten',
+                'Join an officer group',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -211,7 +221,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
                 leading: const Icon(Icons.shield_rounded),
                 title: Text(officer.name),
                 subtitle: Text(
-                  '${widget.participants.where((member) => member.officerId == officer.id).length} Soldaten',
+                  '${widget.participants.where((member) => member.officerId == officer.id).length} soldiers',
                 ),
                 onTap: () => Navigator.pop(context, officer),
               ),
@@ -224,7 +234,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
 
   String _roleName(String role) => switch (role) {
     'general' => 'General',
-    'officer' => 'Offizier',
-    _ => 'Soldat',
+    'officer' => 'Officer',
+    _ => 'Soldier',
   };
 }

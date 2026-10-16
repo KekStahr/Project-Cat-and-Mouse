@@ -48,13 +48,43 @@ class GroupApi {
   Future<Map<String, dynamic>> sendMessage({
     required String groupId,
     required String memberId,
+    required String channel,
+    String? recipientId,
     required Map<String, Object?> encryptedPayload,
   }) => _send(
     'POST',
     '/api/groups/$groupId/messages',
     memberId: memberId,
-    body: {'encryptedPayload': encryptedPayload},
+    body: {
+      'channel': channel,
+      'recipientId': recipientId,
+      'encryptedPayload': encryptedPayload,
+    },
   );
+
+  Future<Map<String, dynamic>> rotateInvite({
+    required String groupId,
+    required String memberId,
+  }) => _send(
+    'POST',
+    '/api/groups/$groupId/invite/rotate',
+    memberId: memberId,
+    body: const {},
+  );
+
+  Future<void> kickMember({
+    required String groupId,
+    required String memberId,
+    required String targetMemberId,
+  }) async {
+    await _send(
+      'POST',
+      '/api/groups/$groupId/members/$targetMemberId/kick',
+      memberId: memberId,
+      body: const {},
+      expectBody: false,
+    );
+  }
 
   Future<void> registerChatKey({
     required String groupId,
@@ -166,7 +196,7 @@ class GroupApi {
       _ => throw ArgumentError.value(method, 'method'),
     };
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      var message = 'Server nicht erreichbar (${response.statusCode}).';
+      var message = 'Server request failed (${response.statusCode}).';
       try {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         if (data['error'] is String) message = data['error'] as String;

@@ -17,6 +17,10 @@ class MapScreen extends StatefulWidget {
     required this.onRequestLocation,
     required this.activePing,
     required this.onPingSelected,
+    required this.currentIsGeneral,
+    required this.onPromoteMember,
+    required this.onKickMember,
+    required this.onMessageMember,
   });
 
   final String groupName;
@@ -29,6 +33,10 @@ class MapScreen extends StatefulWidget {
   final Future<void> Function() onRequestLocation;
   final SafetyPing? activePing;
   final ValueChanged<SafetyPing> onPingSelected;
+  final bool currentIsGeneral;
+  final ValueChanged<Participant> onPromoteMember;
+  final ValueChanged<Participant> onKickMember;
+  final ValueChanged<Participant> onMessageMember;
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -65,7 +73,7 @@ class _MapScreenState extends State<MapScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(content: Text('Standort wird abgefragt …')),
+          const SnackBar(content: Text('Getting your location...')),
         );
       try {
         await widget.onRequestLocation();
@@ -75,7 +83,7 @@ class _MapScreenState extends State<MapScreen> {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
             ..showSnackBar(
-              SnackBar(content: Text('Standortabfrage fehlgeschlagen: $error')),
+              SnackBar(content: Text('Could not get location: $error')),
             );
         }
       }
@@ -117,55 +125,63 @@ class _MapScreenState extends State<MapScreen> {
         if (member.isOfficer) member.id: member,
     };
     final markers = widget.members
-        .where((member) => member.latitude != null && member.longitude != null)
+        .where(
+          (member) =>
+              !member.isGeneral &&
+              member.latitude != null &&
+              member.longitude != null,
+        )
         .map(
           (member) => Marker(
             point: LatLng(member.latitude!, member.longitude!),
-            width: 130,
-            height: 64,
+            width: 116,
+            height: 58,
             alignment: Alignment.topCenter,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  constraints: const BoxConstraints(maxWidth: 126),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 3,
+            child: InkWell(
+              onTap: () => _showMemberActions(member),
+              borderRadius: BorderRadius.circular(14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: _memberColor(member, officers),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black54, blurRadius: 4),
+                      ],
+                    ),
+                    child: Icon(
+                      member.isOfficer
+                          ? Icons.shield_rounded
+                          : Icons.person_rounded,
+                      color: Colors.white,
+                      size: 15,
+                    ),
                   ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xEE121B26),
-                    borderRadius: BorderRadius.circular(10),
+                  const SizedBox(height: 2),
+                  Container(
+                    constraints: const BoxConstraints(maxWidth: 110),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xEE121B26),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      member.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontSize: 9),
+                    ),
                   ),
-                  child: Text(
-                    member.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 10),
-                  ),
-                ),
-                Container(
-                  width: 26,
-                  height: 26,
-                  decoration: BoxDecoration(
-                    color: _memberColor(member, officers),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                    boxShadow: const [
-                      BoxShadow(color: Colors.black54, blurRadius: 4),
-                    ],
-                  ),
-                  child: Icon(
-                    member.isGeneral
-                        ? Icons.star_rounded
-                        : member.isOfficer
-                        ? Icons.shield_rounded
-                        : Icons.person_rounded,
-                    color: Colors.white,
-                    size: 15,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         )
@@ -187,6 +203,7 @@ class _MapScreenState extends State<MapScreen> {
                     : 12,
                 minZoom: 2,
                 maxZoom: 18,
+                onLongPress: (_, _) => _showPingMenu(context),
               ),
               children: [
                 TileLayer(
@@ -200,13 +217,6 @@ class _MapScreenState extends State<MapScreen> {
                   ],
                 ),
               ],
-            ),
-          ),
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onLongPress: () => _showPingMenu(context),
-              child: const SizedBox.expand(),
             ),
           ),
           Positioned(
@@ -244,8 +254,8 @@ class _MapScreenState extends State<MapScreen> {
                             Text(
                               widget.connectionError ??
                                   (widget.groupId == null
-                                      ? 'Keine Gruppe verbunden'
-                                      : '${widget.members.length} Personen · ${widget.members.where((member) => member.online).length} online'),
+                                      ? 'No group connected'
+                                      : '${widget.members.length} members · ${widget.members.where((member) => member.online).length} online'),
                               style: const TextStyle(
                                 color: Color(0xFF8B9AAA),
                                 fontSize: 11,
@@ -259,7 +269,7 @@ class _MapScreenState extends State<MapScreen> {
                           Icons.sos_rounded,
                           color: Color(0xFFFF3B30),
                         ),
-                        tooltip: 'SOS Notruf',
+                        tooltip: 'Emergency SOS',
                         onPressed: () => widget.onPingSelected(SafetyPing.sos),
                       ),
                     ],
@@ -275,7 +285,7 @@ class _MapScreenState extends State<MapScreen> {
                       const SizedBox(width: 8),
                       const Expanded(
                         child: Text(
-                          'Standort mit Gruppe teilen',
+                          'Share location with group',
                           style: TextStyle(fontSize: 12),
                         ),
                       ),
@@ -296,7 +306,7 @@ class _MapScreenState extends State<MapScreen> {
             bottom: widget.activePing == null ? 42 : 100,
             child: FloatingActionButton.small(
               heroTag: 'center-map-on-me',
-              tooltip: 'Standort abfragen und Karte zentrieren',
+              tooltip: 'Get location and center map',
               onPressed: () => _centerOnMe(),
               child: const Icon(Icons.my_location_rounded),
             ),
@@ -324,7 +334,7 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        '${widget.activePing!.label} · Bitte in „Personen“ bestätigen',
+                        '${widget.activePing!.label} · Acknowledge in People',
                         style: const TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
@@ -347,6 +357,51 @@ class _MapScreenState extends State<MapScreen> {
       builder: (context) => _PingPicker(onSelected: widget.onPingSelected),
     );
   }
+
+  void _showMemberActions(Participant member) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: Icon(
+                member.isOfficer ? Icons.shield_rounded : Icons.person_rounded,
+              ),
+              title: Text(member.name),
+              subtitle: Text(member.isOfficer ? 'Officer' : 'Soldier'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_rounded),
+              title: const Text('Send a direct message'),
+              onTap: () {
+                Navigator.pop(context);
+                widget.onMessageMember(member);
+              },
+            ),
+            if (widget.currentIsGeneral && member.isSoldier)
+              ListTile(
+                leading: const Icon(Icons.military_tech_rounded),
+                title: const Text('Promote to officer'),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onPromoteMember(member);
+                },
+              ),
+            if (widget.currentIsGeneral)
+              ListTile(
+                leading: const Icon(Icons.person_remove_rounded),
+                title: const Text('Remove from group'),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onKickMember(member);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _PingPicker extends StatelessWidget {
@@ -367,7 +422,7 @@ class _PingPicker extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Sicherheitsmeldung senden',
+              'Send a safety alert',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 18),
@@ -411,7 +466,7 @@ class _PingPicker extends StatelessWidget {
             ),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Schließen'),
+              child: const Text('Close'),
             ),
           ],
         ),

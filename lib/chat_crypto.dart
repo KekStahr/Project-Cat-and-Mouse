@@ -22,7 +22,7 @@ class ChatCrypto {
     if (privateKey != null && publicKey != null) {
       if (registeredPublicKey != null && publicKey != registeredPublicKey) {
         throw const ChatCryptoException(
-          'Der gespeicherte Chat-Schlüssel stimmt nicht mit dem Server überein.',
+          'The stored chat key does not match the server.',
         );
       }
       return publicKey;
@@ -31,7 +31,7 @@ class ChatCrypto {
         publicKey != null ||
         registeredPublicKey != null) {
       throw const ChatCryptoException(
-        'Der private Chat-Schlüssel fehlt auf diesem Gerät. Alte Nachrichten können nicht wiederhergestellt werden.',
+        'The private chat key is missing from this device. Previous messages cannot be recovered.',
       );
     }
 
@@ -96,14 +96,12 @@ class ChatCrypto {
   }) async {
     final recipients = payload['recipients'];
     if (payload['version'] != 1 || recipients is! Map) {
-      throw const ChatCryptoException('Das Nachrichtenformat ist ungültig.');
+      throw const ChatCryptoException('The message format is invalid.');
     }
     final value = recipients[recipientId];
     if (value == null) return null;
     if (value is! Map<String, dynamic>) {
-      throw const ChatCryptoException(
-        'Der verschlüsselte Nachrichtenschlüssel ist ungültig.',
-      );
+      throw const ChatCryptoException('The encrypted message key is invalid.');
     }
 
     final privateKeyBytes = await _storage.read(
@@ -114,7 +112,7 @@ class ChatCrypto {
     );
     if (privateKeyBytes == null || publicKeyBytes == null) {
       throw const ChatCryptoException(
-        'Der private Chat-Schlüssel fehlt auf diesem Gerät.',
+        'The private chat key is missing from this device.',
       );
     }
     final keyPair = SimpleKeyPairData(
@@ -155,16 +153,12 @@ class ChatCrypto {
   static List<int> _requiredBytes(Map<String, dynamic> value, String key) {
     final encoded = value[key];
     if (encoded is! String) {
-      throw ChatCryptoException(
-        'Verschlüsseltes Nachrichtenfeld "$key" fehlt.',
-      );
+      throw ChatCryptoException('Encrypted message field "$key" is missing.');
     }
     try {
       return base64Decode(encoded);
     } on FormatException {
-      throw ChatCryptoException(
-        'Verschlüsseltes Nachrichtenfeld "$key" ist ungültig.',
-      );
+      throw ChatCryptoException('Encrypted message field "$key" is invalid.');
     }
   }
 
