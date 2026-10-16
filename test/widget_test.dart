@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:project_genz/chat.dart';
+import 'package:project_genz/map.dart';
 import 'package:project_genz/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -85,6 +86,7 @@ void main() {
           body: ChatScreen(
             messages: const [
               ChatMessage(
+                id: 'message-1',
                 senderName: 'Sam',
                 text: '@Sam meet us there',
                 mine: false,
@@ -121,6 +123,49 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.text, '@Mira ');
     controller.dispose();
+  });
+
+  testWidgets('shows a new map ping with confirmation progress and Roger', (
+    tester,
+  ) async {
+    var acknowledgements = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MapScreen(
+            groupName: 'Weekend',
+            connectionError: null,
+            groupId: 'group-1',
+            members: const [],
+            currentMemberId: null,
+            isSharingLocation: false,
+            onLocationSharingChanged: (_) {},
+            onRequestLocation: () async {},
+            activePing: ActivePing(
+              id: 'ping-1',
+              type: SafetyPing.meetup,
+              senderName: 'Alex',
+              createdAt: DateTime.now(),
+              acknowledgedCount: 1,
+              memberCount: 4,
+              acknowledgedByMe: false,
+            ),
+            onPingSelected: (_) {},
+            onAcknowledge: () => acknowledgements++,
+            currentIsGeneral: false,
+            onPromoteMember: (_) {},
+            onKickMember: (_) {},
+            onMessageMember: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Alex · Meetup'), findsOneWidget);
+    expect(find.text('NEW'), findsOneWidget);
+    expect(find.textContaining('Bestätigt 1/4'), findsOneWidget);
+    await tester.tap(find.text('Roger'));
+    expect(acknowledgements, 1);
   });
 
   testWidgets('shows three expandable role lists with name search', (

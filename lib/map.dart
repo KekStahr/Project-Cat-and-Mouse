@@ -17,6 +17,7 @@ class MapScreen extends StatefulWidget {
     required this.onRequestLocation,
     required this.activePing,
     required this.onPingSelected,
+    required this.onAcknowledge,
     required this.currentIsGeneral,
     required this.onPromoteMember,
     required this.onKickMember,
@@ -31,8 +32,9 @@ class MapScreen extends StatefulWidget {
   final bool isSharingLocation;
   final ValueChanged<bool> onLocationSharingChanged;
   final Future<void> Function() onRequestLocation;
-  final SafetyPing? activePing;
+  final ActivePing? activePing;
   final ValueChanged<SafetyPing> onPingSelected;
+  final VoidCallback onAcknowledge;
   final bool currentIsGeneral;
   final ValueChanged<Participant> onPromoteMember;
   final ValueChanged<Participant> onKickMember;
@@ -295,7 +297,7 @@ class _MapScreenState extends State<MapScreen> {
           ),
           Positioned(
             right: 14,
-            bottom: widget.activePing == null ? 42 : 100,
+            bottom: widget.activePing == null ? 42 : 148,
             child: FloatingActionButton.small(
               heroTag: 'center-map-on-me',
               tooltip: 'Get location and center map',
@@ -304,33 +306,131 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
           if (widget.activePing != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: widget.activePing!.type.color.withValues(
+                        alpha: widget.activePing!.isNew ? .58 : .3,
+                      ),
+                      width: widget.activePing!.isNew ? 2 : 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: widget.activePing!.type.color.withValues(
+                          alpha: .12,
+                        ),
+                        blurRadius: 22,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          if (widget.activePing != null)
             Positioned(
               left: 12,
-              right: 62,
+              right: 12,
               bottom: 12,
               child: Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xF2121B26),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(
-                    color: widget.activePing!.color.withValues(alpha: .5),
+                    color: widget.activePing!.type.color.withValues(
+                      alpha: widget.activePing!.isNew ? .72 : .4,
+                    ),
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: widget.activePing!.type.color.withValues(
+                        alpha: .12,
+                      ),
+                      blurRadius: 16,
+                    ),
+                  ],
                 ),
                 child: Row(
                   children: [
                     Icon(
-                      widget.activePing!.icon,
-                      color: widget.activePing!.color,
+                      widget.activePing!.type.icon,
+                      color: widget.activePing!.type.color,
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 9),
                     Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${widget.activePing!.senderName} · ${widget.activePing!.type.label}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                widget.activePing!.isNew ? 'NEW' : 'ACTIVE',
+                                style: TextStyle(
+                                  color: widget.activePing!.type.color,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '${widget.activePing!.ageLabel} · Bestätigt ${widget.activePing!.acknowledgedCount}/${widget.activePing!.memberCount}',
+                            style: const TextStyle(
+                              color: Color(0xFFB1BDCA),
+                              fontSize: 10,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          LinearProgressIndicator(
+                            value: widget.activePing!.memberCount == 0
+                                ? 0
+                                : (widget.activePing!.acknowledgedCount /
+                                          widget.activePing!.memberCount)
+                                      .clamp(0.0, 1.0)
+                                      .toDouble(),
+                            minHeight: 3,
+                            color: widget.activePing!.type.color,
+                            backgroundColor: Colors.white.withValues(
+                              alpha: .12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                    FilledButton.tonal(
+                      onPressed: widget.activePing!.acknowledgedByMe
+                          ? null
+                          : widget.onAcknowledge,
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(62, 40),
+                      ),
                       child: Text(
-                        '${widget.activePing!.label} · Acknowledge in People',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        widget.activePing!.acknowledgedByMe
+                            ? 'Roger ✓'
+                            : 'Roger',
                       ),
                     ),
                   ],

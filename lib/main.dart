@@ -83,6 +83,35 @@ enum SafetyPing {
   final Color color;
 }
 
+class ActivePing {
+  const ActivePing({
+    required this.id,
+    required this.type,
+    required this.senderName,
+    required this.createdAt,
+    required this.acknowledgedCount,
+    required this.memberCount,
+    required this.acknowledgedByMe,
+  });
+
+  final String id;
+  final SafetyPing type;
+  final String senderName;
+  final DateTime createdAt;
+  final int acknowledgedCount;
+  final int memberCount;
+  final bool acknowledgedByMe;
+
+  bool get isNew =>
+      DateTime.now().difference(createdAt.toLocal()) <
+      const Duration(seconds: 60);
+
+  String get ageLabel {
+    final minutes = DateTime.now().difference(createdAt.toLocal()).inMinutes;
+    return minutes < 1 ? 'just now' : '${minutes}m ago';
+  }
+}
+
 class Participant {
   Participant({
     required this.id,
@@ -114,12 +143,14 @@ class Participant {
 
 class ChatMessage {
   const ChatMessage({
+    required this.id,
     required this.senderName,
     required this.text,
     required this.mine,
     required this.chatId,
   });
 
+  final String id;
   final String senderName;
   final String text;
   final bool mine;
@@ -146,8 +177,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
   String _groupName = 'No group';
   String? _inviteCode;
   DateTime? _inviteExpiresAt;
-  SafetyPing? _activePing;
-  String? _activePingId;
+  ActivePing? _activePing;
+  String? _dismissedPingId;
   String? _groupId;
   String? _memberId;
   String? _connectionError;
@@ -162,6 +193,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
   String _expiryChoice = '1 hour';
   String _selectedChatId = 'global';
   bool _isLocked = false;
+  final _knownMessageIds = <String>{};
+  bool _hasLoadedMessages = false;
+  int _unreadMessageCount = 0;
 
   @override
   void initState() {
@@ -216,7 +250,26 @@ class _GroupHomePageState extends State<GroupHomePage> {
         );
       }
       final ping = data['activePing'] as Map<String, dynamic>?;
-      final pingId = ping?['id'] as String?;
+      final activePing = ping == null
+          ? null
+          : ActivePing(
+              id: ping['id'] as String,
+              type: SafetyPing.values.firstWhere(
+                (value) => value.name == ping['type'],
+                orElse: () => SafetyPing.caution,
+              ),
+              senderName: ping['sender_name'] as String? ?? 'Group member',
+              createdAt: DateTime.parse(ping['created_at'] as String),
+              acknowledgedCount:
+                  (ping['acknowledged_count'] as num?)?.toInt() ??
+                  rawMembers.where((member) {
+                    return (member as Map<String, dynamic>)['acknowledged'] ==
+                        true;
+                  }).length,
+              memberCount:
+                  (ping['member_count'] as num?)?.toInt() ?? rawMembers.length,
+              acknowledgedByMe: currentMember['acknowledged'] as bool,
+            );
       final participants = rawMembers.map((item) {
         final member = item as Map<String, dynamic>;
         return Participant(
@@ -248,6 +301,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
         if (text == null) continue;
         messages.add(
           ChatMessage(
+            id: message['id'] as String,
             senderName: message['sender_name'] as String,
             text: text,
             mine: message['sender_id'] == memberId,
@@ -259,6 +313,27 @@ class _GroupHomePageState extends State<GroupHomePage> {
       }
       if (mounted) {
         setState(() {
+          if (!_hasLoadedMessages) {
+            _knownMessageIds.addAll(messages.map((message) => message.id));
+            _hasLoadedMessages = true;
+          } else {
+            final unread = messages
+                .where(
+                  (message) =>
+                      !message.mine && !_knownMessageIds.contains(message.id),
+                )
+                .length;
+            _knownMessageIds.addAll(messages.map((message) => message.id));
+            if (_selectedTab == 1) {
+              _unreadMessageCount = 0;
+            } else {
+              _unreadMessageCount += unread;
+            }
+          }
+          if (activePing?.id != _activePing?.id) _dismissedPingId = null;
+          if (activePing?.acknowledgedByMe == true) {
+            _dismissedPingId = activePing!.id;
+          }
           _groupName = group['name'] as String;
           _inviteCode = group['invite_code'] as String?;
           _inviteExpiresAt = group['invite_expires_at'] == null
@@ -273,13 +348,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
           _messages
             ..clear()
             ..addAll(messages);
-          _activePingId = pingId;
-          _activePing = ping == null
-              ? null
-              : SafetyPing.values.firstWhere(
-                  (value) => value.name == ping['type'],
-                  orElse: () => SafetyPing.caution,
-                );
+          _activePing = activePing;
           _connectionError = null;
         });
       }
@@ -297,6 +366,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
     final member = response['member'] as Map<String, dynamic>;
     _groupId = group['id'] as String;
     _memberId = member['id'] as String;
+    _knownMessageIds.clear();
+    _hasLoadedMessages = false;
+    _unreadMessageCount = 0;
+    _dismissedPingId = null;
     _inviteCode = null;
     _inviteExpiresAt = null;
     final preferences = await SharedPreferences.getInstance();
@@ -551,6 +624,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
     setState(() {
       _selectedChatId = 'direct:${member.id}';
       _selectedTab = 1;
+      _unreadMessageCount = 0;
     });
   }
 
@@ -954,7 +1028,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
         _participants.clear();
         _messages.clear();
         _activePing = null;
-        _activePingId = null;
+        _dismissedPingId = null;
+        _knownMessageIds.clear();
+        _hasLoadedMessages = false;
+        _unreadMessageCount = 0;
         _connectionError = null;
         _selectedChatId = 'global';
       });
@@ -978,7 +1055,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
         type: ping.name,
       );
       if (!mounted) return;
-      setState(() => _selectedTab = 2);
+      setState(() => _selectedTab = 0);
       await _refreshGroup();
       _showNotice('Safety alert "${ping.label}" sent.');
     } catch (error) {
@@ -989,14 +1066,15 @@ class _GroupHomePageState extends State<GroupHomePage> {
   Future<void> _acknowledgePing() async {
     final groupId = _groupId;
     final memberId = _memberId;
-    final pingId = _activePingId;
-    if (groupId == null || memberId == null || pingId == null) return;
+    final ping = _activePing;
+    if (groupId == null || memberId == null || ping == null) return;
     try {
       await _api.acknowledgePing(
         groupId: groupId,
         memberId: memberId,
-        pingId: pingId,
+        pingId: ping.id,
       );
+      if (mounted) setState(() => _dismissedPingId = ping.id);
       await _refreshGroup();
     } catch (error) {
       _showNotice(error.toString());
@@ -1138,8 +1216,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     isSharingLocation: _sharingLocation,
                     onLocationSharingChanged: _setLocationSharing,
                     onRequestLocation: _requestLocation,
-                    activePing: _activePing,
+                    activePing: _activePing?.id == _dismissedPingId
+                        ? null
+                        : _activePing,
                     onPingSelected: _setPing,
+                    onAcknowledge: _acknowledgePing,
                     currentIsGeneral: _currentParticipant?.isGeneral ?? false,
                     onPromoteMember: _promoteToOfficer,
                     onKickMember: _kickMember,
@@ -1164,7 +1245,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   ),
                   PeopleScreen(
                     participants: _participants,
-                    activePing: _activePing,
+                    hasActivePing: _activePing != null,
                     memberId: _memberId,
                     searchController: _searchController,
                     onAcknowledge: _acknowledgePing,
@@ -1262,24 +1343,33 @@ class _GroupHomePageState extends State<GroupHomePage> {
       height: 68,
       backgroundColor: _surface,
       selectedIndex: _selectedTab,
-      onDestinationSelected: (index) => setState(() => _selectedTab = index),
-      destinations: const [
-        NavigationDestination(
+      onDestinationSelected: (index) => setState(() {
+        _selectedTab = index;
+        if (index == 1) _unreadMessageCount = 0;
+      }),
+      destinations: [
+        const NavigationDestination(
           icon: Icon(Icons.map_outlined),
           selectedIcon: Icon(Icons.map_rounded),
           label: 'Map',
         ),
         NavigationDestination(
-          icon: Icon(Icons.chat_bubble_outline_rounded),
-          selectedIcon: Icon(Icons.chat_rounded),
+          icon: _chatBadge(Icons.chat_bubble_outline_rounded),
+          selectedIcon: _chatBadge(Icons.chat_rounded),
           label: 'Chat',
         ),
-        NavigationDestination(
+        const NavigationDestination(
           icon: Icon(Icons.people_outline_rounded),
           selectedIcon: Icon(Icons.people_rounded),
           label: 'People',
         ),
       ],
     ),
+  );
+
+  Widget _chatBadge(IconData icon) => Badge(
+    isLabelVisible: _unreadMessageCount > 0,
+    label: Text(_unreadMessageCount > 99 ? '99+' : '$_unreadMessageCount'),
+    child: Icon(icon),
   );
 }

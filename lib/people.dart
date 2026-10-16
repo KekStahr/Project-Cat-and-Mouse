@@ -6,7 +6,7 @@ class PeopleScreen extends StatefulWidget {
   const PeopleScreen({
     super.key,
     required this.participants,
-    required this.activePing,
+    required this.hasActivePing,
     required this.memberId,
     required this.searchController,
     required this.onAcknowledge,
@@ -15,7 +15,7 @@ class PeopleScreen extends StatefulWidget {
   });
 
   final List<Participant> participants;
-  final SafetyPing? activePing;
+  final bool hasActivePing;
   final String? memberId;
   final TextEditingController searchController;
   final VoidCallback onAcknowledge;
@@ -137,7 +137,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
     Participant? me,
     Map<String, Participant> officers,
   ) {
-    final awaiting = widget.activePing != null && !member.acknowledged;
+    final awaiting = widget.hasActivePing && !member.acknowledged;
     final isMe = member.id == widget.memberId;
     final color = _memberColor(member, officers);
     return Container(

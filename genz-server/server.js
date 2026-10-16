@@ -70,6 +70,8 @@ const schema = `
     CREATE INDEX IF NOT EXISTS messages_group_created_idx
         ON messages(group_id, created_at);
     CREATE INDEX IF NOT EXISTS members_group_idx ON members(group_id);
+    CREATE INDEX IF NOT EXISTS pings_group_created_idx
+        ON pings(group_id, created_at DESC);
     ALTER TABLE members ADD COLUMN IF NOT EXISTS officer_id uuid
         REFERENCES members(id) ON DELETE SET NULL;
     ALTER TABLE members ADD COLUMN IF NOT EXISTS color text;
@@ -294,28 +296,10 @@ app.get("/api/groups/:groupId", async (req, res) => {
             }
         }
     }
-    const [group, members, messages, ping] = await Promise.all([
+    const [group, messages] = await Promise.all([
         pool.query(
             `SELECT id, name, invite_code, invite_expires_at, expires_at FROM groups
              WHERE id = $1`,
-            [req.params.groupId],
-        ),
-        pool.query(
-            `SELECT m.id, m.name, m.role, m.officer_id, m.color, m.public_key,
-                 (m.last_seen_at > now() - interval '60 seconds') AS online,
-                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
-                      THEN m.location_lat ELSE NULL END AS latitude,
-                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
-                      THEN m.location_lon ELSE NULL END AS longitude,
-                 CASE WHEN m.location_updated_at > now() - interval '2 minutes'
-                      THEN m.location_updated_at ELSE NULL END AS location_updated_at,
-                 (a.member_id IS NOT NULL) AS acknowledged
-             FROM members m
-             LEFT JOIN pings p ON p.group_id = m.group_id
-                 AND p.id = (SELECT id FROM pings WHERE group_id = m.group_id
-                                         ORDER BY created_at DESC LIMIT 1)
-             LEFT JOIN acknowledgements a ON a.ping_id = p.id AND a.member_id = m.id
-             WHERE m.group_id = $1 ORDER BY m.name`,
             [req.params.groupId],
         ),
         pool.query(
@@ -338,16 +322,44 @@ app.get("/api/groups/:groupId", async (req, res) => {
              ORDER BY messages.created_at`,
             [req.params.groupId, member.id],
         ),
-        pool.query(
-            `SELECT p.id, p.type, p.created_at
-             FROM pings p WHERE p.group_id = $1
-             ORDER BY p.created_at DESC LIMIT 1`,
-            [req.params.groupId],
-        ),
     ]);
     if (group.rowCount === 0) {
         return res.status(404).json({ error: "Group has expired or was deleted." });
     }
+    const ping = await pool.query(
+        `SELECT p.id, p.type, p.created_at, sender.name AS sender_name,
+             COUNT(a.member_id)::int AS acknowledged_count,
+             (SELECT COUNT(*)::int FROM members WHERE group_id = $1) AS member_count
+         FROM pings p
+         JOIN members sender ON sender.id = p.sender_id AND sender.group_id = p.group_id
+         LEFT JOIN acknowledgements a ON a.ping_id = p.id
+         WHERE p.group_id = $1
+         GROUP BY p.id, sender.name
+         HAVING p.created_at > now() - interval '10 minutes'
+            AND (p.created_at > now() - interval '3 minutes'
+                 OR COUNT(a.member_id) < CEIL(
+                     (SELECT COUNT(*) FROM members WHERE group_id = $1) * 0.8
+                 ))
+         ORDER BY p.created_at DESC LIMIT 1`,
+        [req.params.groupId],
+    );
+    const activePing = ping.rows[0] ?? null;
+    const members = await pool.query(
+        `SELECT m.id, m.name, m.role, m.officer_id, m.color, m.public_key,
+             (m.last_seen_at > now() - interval '60 seconds') AS online,
+             CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                  THEN m.location_lat ELSE NULL END AS latitude,
+             CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                  THEN m.location_lon ELSE NULL END AS longitude,
+             CASE WHEN m.location_updated_at > now() - interval '2 minutes'
+                  THEN m.location_updated_at ELSE NULL END AS location_updated_at,
+             (a.member_id IS NOT NULL) AS acknowledged
+         FROM members m
+         LEFT JOIN acknowledgements a
+             ON a.ping_id = $2 AND a.member_id = m.id
+         WHERE m.group_id = $1 ORDER BY m.name`,
+        [req.params.groupId, activePing?.id ?? null],
+    );
     res.json({
         group: {
             ...group.rows[0],
@@ -360,7 +372,7 @@ app.get("/api/groups/:groupId", async (req, res) => {
         memberId: member.id,
         members: members.rows,
         messages: messages.rows,
-        activePing: ping.rows[0] ?? null,
+        activePing,
     });
 });
 
@@ -635,10 +647,6 @@ app.post("/api/groups/:groupId/pings", async (req, res) => {
              VALUES ($1, $2, $3) RETURNING id, type, created_at`,
             [req.params.groupId, member.id, type],
         );
-        await client.query(
-            `INSERT INTO acknowledgements(ping_id, member_id) VALUES ($1, $2)`,
-            [ping.rows[0].id, member.id],
-        );
         await client.query("COMMIT");
         return res.status(201).json(ping.rows[0]);
     } catch (error) {
@@ -727,6 +735,21 @@ async function start() {
             });
         }, 30_000);
         locationCleanup.unref();
+        const pingCleanup = setInterval(() => {
+            pool.query(
+                `DELETE FROM pings p
+                 WHERE p.created_at <= now() - interval '10 minutes'
+                    OR (p.created_at <= now() - interval '3 minutes'
+                        AND (SELECT COUNT(*) FROM acknowledgements a
+                             WHERE a.ping_id = p.id) >= CEIL(
+                                (SELECT COUNT(*) FROM members m
+                                 WHERE m.group_id = p.group_id) * 0.8
+                            ))`,
+            ).catch((error) => {
+                console.error("Could not clear expired pings:", error);
+            });
+        }, 30_000);
+        pingCleanup.unref();
     } catch (err) {
         console.error("Could not initialize the database schema:", err);
     }
