@@ -158,11 +158,13 @@ class GroupApi {
     required String groupId,
     required String memberId,
     required String type,
+    required double latitude,
+    required double longitude,
   }) => _send(
     'POST',
     '/api/groups/$groupId/pings',
     memberId: memberId,
-    body: {'type': type},
+    body: {'type': type, 'latitude': latitude, 'longitude': longitude},
   );
 
   Future<void> acknowledgePing({

@@ -33,7 +33,7 @@ class MapScreen extends StatefulWidget {
   final ValueChanged<bool> onLocationSharingChanged;
   final Future<void> Function() onRequestLocation;
   final ActivePing? activePing;
-  final ValueChanged<SafetyPing> onPingSelected;
+  final ValueChanged<PingSelection> onPingSelected;
   final VoidCallback onAcknowledge;
   final bool currentIsGeneral;
   final ValueChanged<Participant> onPromoteMember;
@@ -44,13 +44,36 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen>
+    with SingleTickerProviderStateMixin {
   final _mapController = MapController();
+  late final AnimationController _pingPulse;
   bool _centerWhenLocated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _pingPulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1250),
+    );
+    if (widget.activePing != null) _pingPulse.repeat(reverse: true);
+  }
 
   @override
   void didUpdateWidget(covariant MapScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.activePing == null) {
+      _pingPulse
+        ..stop()
+        ..value = 0;
+    } else if (oldWidget.activePing == null) {
+      _pingPulse.repeat(reverse: true);
+    }
+    final ping = widget.activePing;
+    if (ping != null && ping.id != oldWidget.activePing?.id) {
+      _focusPing(ping);
+    }
     if (!_centerWhenLocated) return;
     final member = _currentMember;
     if (member?.latitude == null || member?.longitude == null) return;
@@ -59,6 +82,22 @@ class _MapScreenState extends State<MapScreen> {
       if (!mounted) return;
       _mapController.move(LatLng(member!.latitude!, member.longitude!), 16);
     });
+  }
+
+  void _focusPing(ActivePing ping) {
+    final latitude = ping.latitude;
+    final longitude = ping.longitude;
+    if (latitude == null || longitude == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(latitude, longitude), 15);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pingPulse.dispose();
+    super.dispose();
   }
 
   Participant? get _currentMember {
@@ -117,7 +156,10 @@ class _MapScreenState extends State<MapScreen> {
     }
     final hasCurrentLocation =
         current?.latitude != null && current?.longitude != null;
-    final initialCenter = hasCurrentLocation
+    final ping = widget.activePing;
+    final initialCenter = ping?.latitude != null && ping?.longitude != null
+        ? LatLng(ping!.latitude!, ping.longitude!)
+        : hasCurrentLocation
         ? LatLng(current!.latitude!, current.longitude!)
         : locatedMember == null
         ? const LatLng(20, 0)
@@ -188,6 +230,60 @@ class _MapScreenState extends State<MapScreen> {
           ),
         )
         .toList();
+    if (ping?.latitude != null && ping?.longitude != null) {
+      markers.add(
+        Marker(
+          point: LatLng(ping!.latitude!, ping.longitude!),
+          width: 120,
+          height: 72,
+          alignment: Alignment.bottomCenter,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: ping.type.color.withValues(alpha: .22),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: ping.type.color, width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: ping.type.color.withValues(alpha: .55),
+                      blurRadius: 14,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Icon(ping.type.icon, color: ping.type.color, size: 22),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                constraints: const BoxConstraints(maxWidth: 116),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xF2121B26),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: ping.type.color.withValues(alpha: .8),
+                  ),
+                ),
+                child: Text(
+                  'Ping: ${ping.type.label}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: ping.type.color,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(26),
@@ -198,14 +294,16 @@ class _MapScreenState extends State<MapScreen> {
               mapController: _mapController,
               options: MapOptions(
                 initialCenter: initialCenter,
-                initialZoom: hasCurrentLocation
+                initialZoom: ping?.latitude != null && ping?.longitude != null
+                    ? 15
+                    : hasCurrentLocation
                     ? 15
                     : locatedMember == null
                     ? 2
                     : 12,
                 minZoom: 2,
                 maxZoom: 18,
-                onLongPress: (_, _) => _showPingMenu(context),
+                onLongPress: (_, point) => _showPingMenu(context, point),
               ),
               children: [
                 TileLayer(
@@ -308,24 +406,14 @@ class _MapScreenState extends State<MapScreen> {
           if (widget.activePing != null)
             Positioned.fill(
               child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: widget.activePing!.type.color.withValues(
-                        alpha: widget.activePing!.isNew ? .58 : .3,
-                      ),
-                      width: widget.activePing!.isNew ? 2 : 1,
+                child: AnimatedBuilder(
+                  animation: _pingPulse,
+                  builder: (context, _) => CustomPaint(
+                    painter: _PingEdgePainter(
+                      color: widget.activePing!.type.color,
+                      strength: _pingPulse.value,
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: widget.activePing!.type.color.withValues(
-                          alpha: .12,
-                        ),
-                        blurRadius: 22,
-                        spreadRadius: 1,
-                      ),
-                    ],
+                    child: const SizedBox.expand(),
                   ),
                 ),
               ),
@@ -436,11 +524,19 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _showPingMenu(BuildContext context) {
+  void _showPingMenu(BuildContext context, LatLng point) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) => _PingPicker(onSelected: widget.onPingSelected),
+      builder: (context) => _PingPicker(
+        onSelected: (ping) => widget.onPingSelected(
+          PingSelection(
+            type: ping,
+            latitude: point.latitude,
+            longitude: point.longitude,
+          ),
+        ),
+      ),
     );
   }
 
@@ -559,4 +655,39 @@ class _PingPicker extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _PingEdgePainter extends CustomPainter {
+  const _PingEdgePainter({required this.color, required this.strength});
+
+  final Color color;
+  final double strength;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final edge = RRect.fromRectAndRadius(
+      (Offset.zero & size).deflate(5),
+      const Radius.circular(22),
+    );
+    final pulse = .35 + strength * .65;
+    canvas.drawRRect(
+      edge,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5 + strength * 2
+        ..color = color.withValues(alpha: .35 + pulse * .3)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 7 + strength * 7),
+    );
+    canvas.drawRRect(
+      edge,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = color.withValues(alpha: .55 + pulse * .35),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _PingEdgePainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.strength != strength;
 }

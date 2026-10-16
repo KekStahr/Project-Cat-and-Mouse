@@ -91,6 +91,8 @@ class ActivePing {
     required this.createdAt,
     required this.acknowledgedCount,
     required this.memberCount,
+    this.latitude,
+    this.longitude,
   });
 
   final String id;
@@ -99,6 +101,8 @@ class ActivePing {
   final DateTime createdAt;
   final int acknowledgedCount;
   final int memberCount;
+  final double? latitude;
+  final double? longitude;
 
   bool get isNew =>
       DateTime.now().difference(createdAt.toLocal()) <
@@ -108,6 +112,18 @@ class ActivePing {
     final minutes = DateTime.now().difference(createdAt.toLocal()).inMinutes;
     return minutes < 1 ? 'just now' : '${minutes}m ago';
   }
+}
+
+class PingSelection {
+  const PingSelection({
+    required this.type,
+    required this.latitude,
+    required this.longitude,
+  });
+
+  final SafetyPing type;
+  final double latitude;
+  final double longitude;
 }
 
 class Participant {
@@ -245,6 +261,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
   DateTime? _inviteExpiresAt;
   ActivePing? _activePing;
   String? _dismissedPingId;
+  String? _localPingId;
+  double? _localPingLatitude;
+  double? _localPingLongitude;
   String? _groupId;
   String? _memberId;
   String? _connectionError;
@@ -344,6 +363,12 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   }).length,
               memberCount:
                   (ping['member_count'] as num?)?.toInt() ?? rawMembers.length,
+              latitude:
+                  (ping['latitude'] as num?)?.toDouble() ??
+                  (ping['id'] == _localPingId ? _localPingLatitude : null),
+              longitude:
+                  (ping['longitude'] as num?)?.toDouble() ??
+                  (ping['id'] == _localPingId ? _localPingLongitude : null),
             );
       final participants = rawMembers.map((item) {
         final member = item as Map<String, dynamic>;
@@ -453,6 +478,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _unreadGlobalCount = 0;
     _unreadRestrictedCount = 0;
     _dismissedPingId = null;
+    _localPingId = null;
+    _localPingLatitude = null;
+    _localPingLongitude = null;
     _inviteCode = null;
     _inviteExpiresAt = null;
     final preferences = await SharedPreferences.getInstance();
@@ -1111,6 +1139,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
         _messages.clear();
         _activePing = null;
         _dismissedPingId = null;
+        _localPingId = null;
+        _localPingLatitude = null;
+        _localPingLongitude = null;
         _knownMessageIds.clear();
         _unreadGlobalCount = 0;
         _unreadRestrictedCount = 0;
@@ -1123,7 +1154,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
     }
   }
 
-  Future<void> _setPing(SafetyPing ping) async {
+  Future<void> _setPing(PingSelection selection) async {
     final groupId = _groupId;
     final memberId = _memberId;
     if (groupId == null || memberId == null) {
@@ -1131,15 +1162,20 @@ class _GroupHomePageState extends State<GroupHomePage> {
       return;
     }
     try {
-      await _api.createPing(
+      final createdPing = await _api.createPing(
         groupId: groupId,
         memberId: memberId,
-        type: ping.name,
+        type: selection.type.name,
+        latitude: selection.latitude,
+        longitude: selection.longitude,
       );
+      _localPingId = createdPing['id'] as String?;
+      _localPingLatitude = selection.latitude;
+      _localPingLongitude = selection.longitude;
       if (!mounted) return;
       setState(() => _selectedTab = 0);
       await _refreshGroup();
-      _showNotice('Safety alert "${ping.label}" sent.');
+      _showNotice('Safety alert "${selection.type.label}" sent.');
     } catch (error) {
       _showNotice(error.toString());
     }

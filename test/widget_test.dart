@@ -148,6 +148,8 @@ void main() {
               createdAt: DateTime.now(),
               acknowledgedCount: 1,
               memberCount: 4,
+              latitude: 40.7128,
+              longitude: -74.006,
             ),
             onPingSelected: (_) {},
             onAcknowledge: () => acknowledgements++,
@@ -162,6 +164,7 @@ void main() {
 
     expect(find.text('Alex · Meetup'), findsOneWidget);
     expect(find.text('NEW'), findsOneWidget);
+    expect(find.text('Ping: Meetup'), findsOneWidget);
     expect(find.textContaining('Bestätigt 1/4'), findsOneWidget);
     await tester.tap(find.text('Roger'));
     expect(acknowledgements, 1);

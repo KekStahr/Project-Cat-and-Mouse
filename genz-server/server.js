@@ -59,6 +59,8 @@ const schema = `
         group_id uuid NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
         sender_id uuid NOT NULL REFERENCES members(id) ON DELETE CASCADE,
         type text NOT NULL,
+        latitude double precision,
+        longitude double precision,
         created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS acknowledgements (
@@ -79,6 +81,8 @@ const schema = `
     ALTER TABLE members ADD COLUMN IF NOT EXISTS location_lat double precision;
     ALTER TABLE members ADD COLUMN IF NOT EXISTS location_lon double precision;
     ALTER TABLE members ADD COLUMN IF NOT EXISTS location_updated_at timestamptz;
+    ALTER TABLE pings ADD COLUMN IF NOT EXISTS latitude double precision;
+    ALTER TABLE pings ADD COLUMN IF NOT EXISTS longitude double precision;
     ALTER TABLE groups ADD COLUMN IF NOT EXISTS invite_expires_at timestamptz;
     ALTER TABLE groups ALTER COLUMN invite_code TYPE text;
     ALTER TABLE groups ALTER COLUMN invite_code DROP NOT NULL;
@@ -372,7 +376,8 @@ app.get("/api/groups/:groupId", async (req, res) => {
         return res.status(404).json({ error: "Group has expired or was deleted." });
     }
     const ping = await pool.query(
-        `SELECT p.id, p.type, p.created_at, sender.name AS sender_name,
+           `SELECT p.id, p.type, p.latitude, p.longitude, p.created_at,
+               sender.name AS sender_name,
              COUNT(a.member_id)::int AS acknowledged_count,
              (SELECT COUNT(*)::int FROM members WHERE group_id = $1) AS member_count
          FROM pings p
@@ -684,13 +689,26 @@ app.post("/api/groups/:groupId/pings", async (req, res) => {
     if (!["meetup", "help", "caution", "checkIn", "regroup"].includes(type)) {
         return badRequest(res, "Unknown safety alert.");
     }
+    const { latitude, longitude } = req.body;
+    if (
+        (latitude == null) !== (longitude == null) ||
+        (latitude != null &&
+            (typeof latitude !== "number" || !Number.isFinite(latitude) ||
+                latitude < -90 || latitude > 90)) ||
+        (longitude != null &&
+            (typeof longitude !== "number" || !Number.isFinite(longitude) ||
+                longitude < -180 || longitude > 180))
+    ) {
+        return badRequest(res, "Ping coordinates are invalid.");
+    }
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
         const ping = await client.query(
-            `INSERT INTO pings(group_id, sender_id, type)
-             VALUES ($1, $2, $3) RETURNING id, type, created_at`,
-            [req.params.groupId, member.id, type],
+            `INSERT INTO pings(group_id, sender_id, type, latitude, longitude)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id, type, latitude, longitude, created_at`,
+            [req.params.groupId, member.id, type, latitude ?? null, longitude ?? null],
         );
         await client.query("COMMIT");
         return res.status(201).json(ping.rows[0]);
