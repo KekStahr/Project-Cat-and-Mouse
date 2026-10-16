@@ -91,7 +91,6 @@ class ActivePing {
     required this.createdAt,
     required this.acknowledgedCount,
     required this.memberCount,
-    required this.acknowledgedByMe,
   });
 
   final String id;
@@ -100,7 +99,6 @@ class ActivePing {
   final DateTime createdAt;
   final int acknowledgedCount;
   final int memberCount;
-  final bool acknowledgedByMe;
 
   bool get isNew =>
       DateTime.now().difference(createdAt.toLocal()) <
@@ -157,6 +155,74 @@ class ChatMessage {
   final String chatId;
 }
 
+class ChatUnreadIcon extends StatelessWidget {
+  const ChatUnreadIcon({
+    super.key,
+    required this.icon,
+    required this.globalUnread,
+    required this.restrictedUnread,
+  });
+
+  final IconData icon;
+  final int globalUnread;
+  final int restrictedUnread;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 70,
+    height: 34,
+    child: Stack(
+      alignment: Alignment.center,
+      clipBehavior: Clip.none,
+      children: [
+        Icon(icon),
+        if (globalUnread > 0)
+          Positioned(
+            left: 3,
+            top: 0,
+            child: _countBadge(
+              globalUnread,
+              const Color(0xFFE7B84A),
+              'Unread Global messages',
+            ),
+          ),
+        if (restrictedUnread > 0)
+          Positioned(
+            right: 3,
+            top: 0,
+            child: _countBadge(
+              restrictedUnread,
+              const Color(0xFFE65252),
+              'Unread restricted messages',
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+Widget _countBadge(int count, Color color, String tooltip) => Tooltip(
+  message: tooltip,
+  child: Container(
+    constraints: const BoxConstraints(minWidth: 17, minHeight: 17),
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    decoration: BoxDecoration(
+      color: color,
+      borderRadius: BorderRadius.circular(9),
+    ),
+    alignment: Alignment.center,
+    child: Text(
+      count > 99 ? '99+' : '$count',
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 9,
+        fontWeight: FontWeight.w800,
+        height: 1,
+      ),
+    ),
+  ),
+);
+
 class GroupHomePage extends StatefulWidget {
   const GroupHomePage({super.key});
 
@@ -194,8 +260,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
   String _selectedChatId = 'global';
   bool _isLocked = false;
   final _knownMessageIds = <String>{};
-  bool _hasLoadedMessages = false;
-  int _unreadMessageCount = 0;
+  int _unreadGlobalCount = 0;
+  int _unreadRestrictedCount = 0;
 
   @override
   void initState() {
@@ -208,6 +274,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _groupId = preferences.getString('reso.groupId');
     _memberId = preferences.getString('reso.memberId');
     _isLocked = preferences.getBool('reso.locked') ?? false;
+    final memberId = _memberId;
+    if (memberId != null) {
+      _knownMessageIds.addAll(
+        preferences.getStringList('reso.seenMessages.$memberId') ?? const [],
+      );
+      _unreadGlobalCount =
+          preferences.getInt('reso.unreadGlobal.$memberId') ?? 0;
+      _unreadRestrictedCount =
+          preferences.getInt('reso.unreadRestricted.$memberId') ?? 0;
+    }
     if (!mounted) return;
     if (_groupId == null || _memberId == null) {
       setState(() {});
@@ -268,7 +344,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   }).length,
               memberCount:
                   (ping['member_count'] as num?)?.toInt() ?? rawMembers.length,
-              acknowledgedByMe: currentMember['acknowledged'] as bool,
             );
       final participants = rawMembers.map((item) {
         final member = item as Map<String, dynamic>;
@@ -311,29 +386,31 @@ class _GroupHomePageState extends State<GroupHomePage> {
           ),
         );
       }
+      final knownMessageCount = _knownMessageIds.length;
+      final previousGlobalUnread = _unreadGlobalCount;
+      final previousRestrictedUnread = _unreadRestrictedCount;
       if (mounted) {
         setState(() {
-          if (!_hasLoadedMessages) {
-            _knownMessageIds.addAll(messages.map((message) => message.id));
-            _hasLoadedMessages = true;
-          } else {
-            final unread = messages
-                .where(
-                  (message) =>
-                      !message.mine && !_knownMessageIds.contains(message.id),
-                )
-                .length;
-            _knownMessageIds.addAll(messages.map((message) => message.id));
-            if (_selectedTab == 1) {
-              _unreadMessageCount = 0;
-            } else {
-              _unreadMessageCount += unread;
+          final unread = messages
+              .where(
+                (message) =>
+                    !message.mine && !_knownMessageIds.contains(message.id),
+              )
+              .toList();
+          _knownMessageIds.addAll(messages.map((message) => message.id));
+          for (final message in unread) {
+            if (_selectedTab == 1 && _selectedChatId == message.chatId) {
+              continue;
+            }
+            if (message.chatId == 'global') {
+              _unreadGlobalCount++;
+            } else if (message.chatId == 'command' ||
+                message.chatId == 'briefing') {
+              _unreadRestrictedCount++;
             }
           }
+          if (_selectedTab == 1) _markChatRead(_selectedChatId);
           if (activePing?.id != _activePing?.id) _dismissedPingId = null;
-          if (activePing?.acknowledgedByMe == true) {
-            _dismissedPingId = activePing!.id;
-          }
           _groupName = group['name'] as String;
           _inviteCode = group['invite_code'] as String?;
           _inviteExpiresAt = group['invite_expires_at'] == null
@@ -352,6 +429,12 @@ class _GroupHomePageState extends State<GroupHomePage> {
           _connectionError = null;
         });
       }
+      if (mounted &&
+          (_knownMessageIds.length != knownMessageCount ||
+              _unreadGlobalCount != previousGlobalUnread ||
+              _unreadRestrictedCount != previousRestrictedUnread)) {
+        await _persistUnreadState(memberId);
+      }
     } catch (error) {
       if (mounted && _groupId == groupId && _memberId == memberId) {
         setState(() => _connectionError = error.toString());
@@ -367,8 +450,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _groupId = group['id'] as String;
     _memberId = member['id'] as String;
     _knownMessageIds.clear();
-    _hasLoadedMessages = false;
-    _unreadMessageCount = 0;
+    _unreadGlobalCount = 0;
+    _unreadRestrictedCount = 0;
     _dismissedPingId = null;
     _inviteCode = null;
     _inviteExpiresAt = null;
@@ -624,7 +707,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
     setState(() {
       _selectedChatId = 'direct:${member.id}';
       _selectedTab = 1;
-      _unreadMessageCount = 0;
     });
   }
 
@@ -1030,8 +1112,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
         _activePing = null;
         _dismissedPingId = null;
         _knownMessageIds.clear();
-        _hasLoadedMessages = false;
-        _unreadMessageCount = 0;
+        _unreadGlobalCount = 0;
+        _unreadRestrictedCount = 0;
         _connectionError = null;
         _selectedChatId = 'global';
       });
@@ -1160,6 +1242,29 @@ class _GroupHomePageState extends State<GroupHomePage> {
     };
   }
 
+  void _markChatRead(String chatId) {
+    if (chatId == 'global') {
+      _unreadGlobalCount = 0;
+    } else if (chatId == 'command' || chatId == 'briefing') {
+      _unreadRestrictedCount = 0;
+    }
+  }
+
+  Future<void> _persistUnreadState(String memberId) async {
+    final preferences = await SharedPreferences.getInstance();
+    if (_memberId != memberId) return;
+    final seenIds = _knownMessageIds.toList();
+    await preferences.setStringList(
+      'reso.seenMessages.$memberId',
+      seenIds.length > 200 ? seenIds.sublist(seenIds.length - 200) : seenIds,
+    );
+    await preferences.setInt('reso.unreadGlobal.$memberId', _unreadGlobalCount);
+    await preferences.setInt(
+      'reso.unreadRestricted.$memberId',
+      _unreadRestrictedCount,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLocked) {
@@ -1238,8 +1343,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
                         )
                         .map((member) => member.name)
                         .firstOrNull,
-                    onRoomSelected: (chatId) =>
-                        setState(() => _selectedChatId = chatId),
+                    onRoomSelected: (chatId) {
+                      setState(() {
+                        _selectedChatId = chatId;
+                        _markChatRead(chatId);
+                      });
+                      final memberId = _memberId;
+                      if (memberId != null) {
+                        unawaited(_persistUnreadState(memberId));
+                      }
+                    },
                     participants: _participants,
                     currentMemberName: _currentParticipant?.name,
                   ),
@@ -1248,7 +1361,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     hasActivePing: _activePing != null,
                     memberId: _memberId,
                     searchController: _searchController,
-                    onAcknowledge: _acknowledgePing,
                     onPromoteToOfficer: _promoteToOfficer,
                     onJoinOfficerGroup: _joinOfficerGroup,
                   ),
@@ -1343,10 +1455,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
       height: 68,
       backgroundColor: _surface,
       selectedIndex: _selectedTab,
-      onDestinationSelected: (index) => setState(() {
-        _selectedTab = index;
-        if (index == 1) _unreadMessageCount = 0;
-      }),
+      onDestinationSelected: (index) {
+        setState(() {
+          _selectedTab = index;
+          if (index == 1) _markChatRead(_selectedChatId);
+        });
+        final memberId = _memberId;
+        if (index == 1 && memberId != null) {
+          unawaited(_persistUnreadState(memberId));
+        }
+      },
       destinations: [
         const NavigationDestination(
           icon: Icon(Icons.map_outlined),
@@ -1354,8 +1472,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
           label: 'Map',
         ),
         NavigationDestination(
-          icon: _chatBadge(Icons.chat_bubble_outline_rounded),
-          selectedIcon: _chatBadge(Icons.chat_rounded),
+          icon: ChatUnreadIcon(
+            icon: Icons.chat_bubble_outline_rounded,
+            globalUnread: _unreadGlobalCount,
+            restrictedUnread: _unreadRestrictedCount,
+          ),
+          selectedIcon: ChatUnreadIcon(
+            icon: Icons.chat_rounded,
+            globalUnread: _unreadGlobalCount,
+            restrictedUnread: _unreadRestrictedCount,
+          ),
           label: 'Chat',
         ),
         const NavigationDestination(
@@ -1365,11 +1491,5 @@ class _GroupHomePageState extends State<GroupHomePage> {
         ),
       ],
     ),
-  );
-
-  Widget _chatBadge(IconData icon) => Badge(
-    isLabelVisible: _unreadMessageCount > 0,
-    label: Text(_unreadMessageCount > 99 ? '99+' : '$_unreadMessageCount'),
-    child: Icon(icon),
   );
 }

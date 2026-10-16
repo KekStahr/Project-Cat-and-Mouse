@@ -192,6 +192,32 @@ app.post("/api/groups", async (req, res) => {
         const client = await pool.connect();
         try {
             await client.query("BEGIN");
+            let oldGroupId;
+            if (existingMemberId) {
+                const oldMember = await client.query(
+                    "SELECT group_id FROM members WHERE id = $1",
+                    [existingMemberId],
+                );
+                if (oldMember.rowCount === 0) {
+                    await client.query("ROLLBACK");
+                    return res.status(403).json({ error: "Invalid member ID." });
+                }
+                oldGroupId = oldMember.rows[0].group_id;
+                await client.query(
+                    "SELECT id FROM groups WHERE id = $1 FOR UPDATE",
+                    [oldGroupId],
+                );
+                const lockedMember = await client.query(
+                    "SELECT role FROM members WHERE id = $1 AND group_id = $2 FOR UPDATE",
+                    [existingMemberId, oldGroupId],
+                );
+                if (lockedMember.rowCount === 0 || lockedMember.rows[0].role !== "general") {
+                    await client.query("ROLLBACK");
+                    return res.status(403).json({
+                        error: "Only the General can create another group.",
+                    });
+                }
+            }
             const inviteCode = newInviteCode();
             const group = await client.query(
                 `INSERT INTO groups(name, invite_code, invite_token_hash,
@@ -206,6 +232,25 @@ app.post("/api/groups", async (req, res) => {
                  VALUES ($1, $2, 'general') RETURNING id, name, role`,
                 [group.rows[0].id, memberName],
             );
+            if (existingMemberId && oldGroupId) {
+                await client.query(
+                    "DELETE FROM members WHERE id = $1 AND group_id = $2",
+                    [existingMemberId, oldGroupId],
+                );
+                const successor = await client.query(
+                    `SELECT id FROM members WHERE group_id = $1
+                     ORDER BY last_seen_at, id LIMIT 1`,
+                    [oldGroupId],
+                );
+                if (successor.rowCount === 0) {
+                    await client.query("DELETE FROM groups WHERE id = $1", [oldGroupId]);
+                } else {
+                    await client.query(
+                        "UPDATE members SET role = 'general', officer_id = NULL WHERE id = $1",
+                        [successor.rows[0].id],
+                    );
+                }
+            }
             await client.query("COMMIT");
             return res.status(201).json({
                 group: group.rows[0],

@@ -148,7 +148,6 @@ void main() {
               createdAt: DateTime.now(),
               acknowledgedCount: 1,
               memberCount: 4,
-              acknowledgedByMe: false,
             ),
             onPingSelected: (_) {},
             onAcknowledge: () => acknowledgements++,
@@ -166,6 +165,29 @@ void main() {
     expect(find.textContaining('Bestätigt 1/4'), findsOneWidget);
     await tester.tap(find.text('Roger'));
     expect(acknowledgements, 1);
+  });
+
+  testWidgets('shows separate Global and restricted unread badges', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: ChatUnreadIcon(
+              icon: Icons.chat_rounded,
+              globalUnread: 1,
+              restrictedUnread: 5,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('5'), findsOneWidget);
+    expect(find.byTooltip('Unread Global messages'), findsOneWidget);
+    expect(find.byTooltip('Unread restricted messages'), findsOneWidget);
   });
 
   testWidgets('shows three expandable role lists with name search', (

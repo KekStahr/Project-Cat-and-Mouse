@@ -9,7 +9,6 @@ class PeopleScreen extends StatefulWidget {
     required this.hasActivePing,
     required this.memberId,
     required this.searchController,
-    required this.onAcknowledge,
     required this.onPromoteToOfficer,
     required this.onJoinOfficerGroup,
   });
@@ -18,7 +17,6 @@ class PeopleScreen extends StatefulWidget {
   final bool hasActivePing;
   final String? memberId;
   final TextEditingController searchController;
-  final VoidCallback onAcknowledge;
   final ValueChanged<Participant> onPromoteToOfficer;
   final ValueChanged<Participant> onJoinOfficerGroup;
 
@@ -185,12 +183,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
                 color: Color(0xFFFFC46B),
               ),
             )
-          else if (awaiting && isMe)
-            FilledButton.tonal(
-              onPressed: widget.onAcknowledge,
-              child: const Text('Acknowledge'),
-            )
-          else if (awaiting)
+          else if (awaiting && !isMe)
             const Text(
               'Pending',
               style: TextStyle(color: Color(0xFFFF7979), fontSize: 11),

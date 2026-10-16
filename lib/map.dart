@@ -420,18 +420,12 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                     const SizedBox(width: 9),
                     FilledButton.tonal(
-                      onPressed: widget.activePing!.acknowledgedByMe
-                          ? null
-                          : widget.onAcknowledge,
+                      onPressed: widget.onAcknowledge,
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         minimumSize: const Size(62, 40),
                       ),
-                      child: Text(
-                        widget.activePing!.acknowledgedByMe
-                            ? 'Roger ✓'
-                            : 'Roger',
-                      ),
+                      child: const Text('Roger'),
                     ),
                   ],
                 ),
