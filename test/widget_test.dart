@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:project_genz/chat.dart';
 import 'package:project_genz/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -13,6 +14,7 @@ void main() {
     expect(find.text('Reşo'), findsOneWidget);
     expect(find.text('No group'), findsOneWidget);
     expect(find.text('No group connected'), findsOneWidget);
+    expect(find.byTooltip('Emergency SOS'), findsNothing);
     expect(find.text('Map'), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);
     expect(find.text('People'), findsOneWidget);
@@ -56,9 +58,69 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Join group'), findsOneWidget);
-    expect(find.text('Invitation link or token'), findsOneWidget);
+    expect(find.text('8-digit invitation code'), findsOneWidget);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('suggests members and highlights received mentions', (
+    tester,
+  ) async {
+    final controller = TextEditingController();
+    final participant = Participant(
+      id: 'mira-id',
+      name: 'Mira',
+      online: true,
+      role: 'soldier',
+      acknowledged: false,
+      officerId: null,
+      color: null,
+      publicKey: null,
+      latitude: null,
+      longitude: null,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatScreen(
+            messages: const [
+              ChatMessage(
+                senderName: 'Sam',
+                text: '@Sam meet us there',
+                mine: false,
+                chatId: 'global',
+              ),
+            ],
+            onSendMessage: (_) {},
+            chatController: controller,
+            rooms: const {'global': 'Global'},
+            activeChatId: 'global',
+            directChatLabel: null,
+            onRoomSelected: (_) {},
+            participants: [participant],
+            currentMemberName: 'Sam',
+          ),
+        ),
+      ),
+    );
+
+    final messageFinder = find.byWidgetPredicate(
+      (widget) =>
+          widget is RichText &&
+          widget.text.toPlainText() == '@Sam meet us there',
+    );
+    final message = tester.widget<RichText>(messageFinder);
+    final mention = (message.text as TextSpan).children!.first as TextSpan;
+    expect(mention.text, '@Sam');
+    expect(mention.style?.backgroundColor, isNotNull);
+
+    await tester.enterText(find.byType(TextField), '@Mi');
+    await tester.pumpAndSettle();
+    expect(find.text('Mira'), findsOneWidget);
+    await tester.tap(find.text('Mira'));
+    await tester.pumpAndSettle();
+    expect(controller.text, '@Mira ');
+    controller.dispose();
   });
 
   testWidgets('shows three expandable role lists with name search', (

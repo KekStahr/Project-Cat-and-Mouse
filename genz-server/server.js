@@ -1,4 +1,4 @@
-const { createHash, randomBytes, randomInt } = require("node:crypto");
+const { createHash, randomInt } = require("node:crypto");
 const express = require("express");
 const { rateLimit } = require("express-rate-limit");
 const { Pool } = require("pg");
@@ -127,8 +127,8 @@ function hashInviteToken(token) {
     return createHash("sha256").update(token).digest("hex");
 }
 
-function newInviteToken() {
-    return randomBytes(32).toString("hex");
+function newInviteCode() {
+    return String(randomInt(10_000_000, 100_000_000));
 }
 
 async function memberFor(req, res) {
@@ -190,15 +190,14 @@ app.post("/api/groups", async (req, res) => {
         const client = await pool.connect();
         try {
             await client.query("BEGIN");
-            const inviteToken = newInviteToken();
+            const inviteCode = newInviteCode();
             const group = await client.query(
                 `INSERT INTO groups(name, invite_code, invite_token_hash,
                                     expires_at, invite_expires_at)
-                 VALUES ($1, NULL, $2, now() + ($3 * interval '1 minute'),
-                         LEAST(now() + interval '15 minutes',
-                               now() + ($3 * interval '1 minute')))
-                 RETURNING id, name, invite_expires_at, expires_at`,
-                [name, hashInviteToken(inviteToken), expiresInMinutes],
+                 VALUES ($1, $2, NULL, now() + ($3 * interval '1 minute'),
+                     now() + ($3 * interval '1 minute'))
+                 RETURNING id, name, invite_code, invite_expires_at, expires_at`,
+                [name, inviteCode, expiresInMinutes],
             );
             const member = await client.query(
                 `INSERT INTO members(group_id, name, role)
@@ -207,7 +206,7 @@ app.post("/api/groups", async (req, res) => {
             );
             await client.query("COMMIT");
             return res.status(201).json({
-                group: { ...group.rows[0], invite_code: inviteToken },
+                group: group.rows[0],
                 member: member.rows[0],
             });
         } catch (error) {
@@ -230,10 +229,10 @@ app.post(
     async (req, res) => {
     const inviteCode = inputText(req.body.inviteCode, 128);
     const memberName = inputText(req.body.memberName, 24);
-    const isLegacyCode = /^\d{6}$/.test(inviteCode);
+    const isNumericCode = /^\d{8}$/.test(inviteCode) || /^\d{6}$/.test(inviteCode);
     const isSecureToken = /^[0-9a-f]{64}$/.test(inviteCode);
-    if ((!isLegacyCode && !isSecureToken) || !memberName) {
-        return badRequest(res, "The invite link or name is invalid.");
+    if ((!isNumericCode && !isSecureToken) || !memberName) {
+        return badRequest(res, "The invite code or name is invalid.");
     }
     const tokenHash = isSecureToken ? hashInviteToken(inviteCode) : null;
     const client = await pool.connect();
@@ -276,19 +275,19 @@ app.get("/api/groups/:groupId", async (req, res) => {
     await pool.query("UPDATE members SET last_seen_at = now() WHERE id = $1", [
         member.id,
     ]);
-    let refreshedInviteToken;
+    let refreshedInviteCode;
     if (member.role === "general") {
         for (let attempt = 0; attempt < 5; attempt += 1) {
-            const inviteToken = newInviteToken();
+            const inviteCode = newInviteCode();
             try {
                 const rotated = await pool.query(
-                    `UPDATE groups SET invite_code = NULL, invite_token_hash = $1,
-                        invite_expires_at = LEAST(now() + interval '15 minutes', expires_at)
+                    `UPDATE groups SET invite_code = $1, invite_token_hash = NULL,
+                        invite_expires_at = expires_at
                      WHERE id = $2 AND expires_at > now()
-                       AND invite_expires_at <= now()`,
-                    [hashInviteToken(inviteToken), req.params.groupId],
+                       AND (invite_code IS NULL OR invite_code !~ '^[0-9]{8}$')`,
+                    [inviteCode, req.params.groupId],
                 );
-                if (rotated.rowCount > 0) refreshedInviteToken = inviteToken;
+                if (rotated.rowCount > 0) refreshedInviteCode = inviteCode;
                 break;
             } catch (error) {
                 if (error.code !== "23505" || attempt === 4) throw error;
@@ -297,7 +296,7 @@ app.get("/api/groups/:groupId", async (req, res) => {
     }
     const [group, members, messages, ping] = await Promise.all([
         pool.query(
-            `SELECT id, name, invite_expires_at, expires_at FROM groups
+            `SELECT id, name, invite_code, invite_expires_at, expires_at FROM groups
              WHERE id = $1`,
             [req.params.groupId],
         ),
@@ -352,8 +351,9 @@ app.get("/api/groups/:groupId", async (req, res) => {
     res.json({
         group: {
             ...group.rows[0],
-            invite_code:
-                member.role === "general" ? refreshedInviteToken ?? null : null,
+            invite_code: member.role === "general"
+                ? refreshedInviteCode ?? group.rows[0].invite_code
+                : null,
             invite_expires_at:
                 member.role === "general" ? group.rows[0].invite_expires_at : null,
         },
@@ -533,6 +533,46 @@ app.post("/api/groups/:groupId/members/:memberId/kick", async (req, res) => {
     res.sendStatus(204);
 });
 
+app.post("/api/groups/:groupId/leave", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const group = await client.query(
+            "SELECT id FROM groups WHERE id = $1 FOR UPDATE",
+            [req.params.groupId],
+        );
+        if (group.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: "Group not found." });
+        }
+        await client.query("DELETE FROM members WHERE id = $1", [member.id]);
+        if (member.role === "general") {
+            const nextGeneral = await client.query(
+                `SELECT id FROM members WHERE group_id = $1
+                 ORDER BY last_seen_at, id LIMIT 1`,
+                [req.params.groupId],
+            );
+            if (nextGeneral.rowCount === 0) {
+                await client.query("DELETE FROM groups WHERE id = $1", [req.params.groupId]);
+            } else {
+                await client.query(
+                    "UPDATE members SET role = 'general' WHERE id = $1",
+                    [nextGeneral.rows[0].id],
+                );
+            }
+        }
+        await client.query("COMMIT");
+        return res.sendStatus(204);
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+});
+
 app.post("/api/groups/:groupId/invite/rotate", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
@@ -540,19 +580,19 @@ app.post("/api/groups/:groupId/invite/rotate", async (req, res) => {
         return res.status(403).json({ error: "Only the General can rotate the invite." });
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
-        const inviteToken = newInviteToken();
+        const inviteCode = newInviteCode();
         try {
             const result = await pool.query(
-                `UPDATE groups SET invite_code = NULL, invite_token_hash = $1,
-                    invite_expires_at = LEAST(now() + interval '15 minutes', expires_at)
+                `UPDATE groups SET invite_code = $1, invite_token_hash = NULL,
+                    invite_expires_at = expires_at
                  WHERE id = $2 AND expires_at > now()
                  RETURNING invite_expires_at`,
-                [hashInviteToken(inviteToken), req.params.groupId],
+                [inviteCode, req.params.groupId],
             );
             if (result.rowCount === 0) {
                 return res.status(404).json({ error: "Group has expired." });
             }
-            return res.json({ ...result.rows[0], invite_code: inviteToken });
+            return res.json({ ...result.rows[0], invite_code: inviteCode });
         } catch (error) {
             if (error.code !== "23505" || attempt === 4) throw error;
         }
@@ -584,7 +624,7 @@ app.post("/api/groups/:groupId/pings", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
     const type = inputText(req.body.type, 20);
-    if (!["meetup", "help", "caution", "checkIn", "regroup", "sos"].includes(type)) {
+    if (!["meetup", "help", "caution", "checkIn", "regroup"].includes(type)) {
         return badRequest(res, "Unknown safety alert.");
     }
     const client = await pool.connect();

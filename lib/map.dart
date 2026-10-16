@@ -264,14 +264,6 @@ class _MapScreenState extends State<MapScreen> {
                           ],
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.sos_rounded,
-                          color: Color(0xFFFF3B30),
-                        ),
-                        tooltip: 'Emergency SOS',
-                        onPressed: () => widget.onPingSelected(SafetyPing.sos),
-                      ),
                     ],
                   ),
                   const Divider(height: 12),

@@ -40,6 +40,19 @@ class GroupApi {
     body: {'inviteCode': inviteCode, 'memberName': memberName},
   );
 
+  Future<void> leaveGroup({
+    required String groupId,
+    required String memberId,
+  }) async {
+    await _send(
+      'POST',
+      '/api/groups/$groupId/leave',
+      memberId: memberId,
+      body: const {},
+      expectBody: false,
+    );
+  }
+
   Future<Map<String, dynamic>> fetchGroup({
     required String groupId,
     required String memberId,

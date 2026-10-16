@@ -74,8 +74,7 @@ enum SafetyPing {
     'Move to the group meeting point',
     Icons.groups_rounded,
     Color(0xFFC3A1FF),
-  ),
-  sos('SOS', 'Critical emergency!', Icons.warning_rounded, Color(0xFFFF3B30));
+  );
 
   const SafetyPing(this.label, this.description, this.icon, this.color);
   final String label;
@@ -199,6 +198,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _refreshing = true;
     try {
       final data = await _api.fetchGroup(groupId: groupId, memberId: memberId);
+      if (_groupId != groupId || _memberId != memberId) return;
       final group = data['group'] as Map<String, dynamic>;
       final rawMembers = data['members'] as List<dynamic>;
       final currentMember = rawMembers.cast<Map<String, dynamic>>().firstWhere(
@@ -260,9 +260,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
       if (mounted) {
         setState(() {
           _groupName = group['name'] as String;
-          if (group['invite_code'] is String) {
-            _inviteCode = group['invite_code'] as String;
-          }
+          _inviteCode = group['invite_code'] as String?;
           _inviteExpiresAt = group['invite_expires_at'] == null
               ? null
               : DateTime.parse(group['invite_expires_at'] as String);
@@ -286,7 +284,9 @@ class _GroupHomePageState extends State<GroupHomePage> {
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _connectionError = error.toString());
+      if (mounted && _groupId == groupId && _memberId == memberId) {
+        setState(() => _connectionError = error.toString());
+      }
     } finally {
       _refreshing = false;
     }
@@ -570,7 +570,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
           invite['invite_expires_at'] as String,
         );
       });
-      _showNotice('A new invite link is ready and expires in 15 minutes.');
+      _showNotice('A new invite code is ready.');
     } catch (error) {
       if (mounted) _showNotice(error.toString());
     }
@@ -601,9 +601,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
       await _showInviteCode();
       return;
     }
-    final inviteLink = Uri.base
-        .replace(queryParameters: {...Uri.base.queryParameters, 'invite': code})
-        .toString();
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -612,17 +609,22 @@ class _GroupHomePageState extends State<GroupHomePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Share this secure invite link. It expires automatically:',
+              'Share this 8-digit code. It works until the group expires:',
             ),
             const SizedBox(height: 12),
             SelectableText(
-              inviteLink,
-              style: const TextStyle(fontSize: 13, color: _mint),
+              code,
+              style: const TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 7,
+                color: _mint,
+              ),
             ),
             const SizedBox(height: 12),
             Text(
               _inviteExpiresAt == null
-                  ? 'Invite expires in 15 minutes.'
+                  ? 'Code expires with the group.'
                   : 'Expires: ${_inviteExpiresAt!.toLocal()}',
               style: const TextStyle(color: _muted, fontSize: 12),
             ),
@@ -635,15 +637,15 @@ class _GroupHomePageState extends State<GroupHomePage> {
               await _rotateInvite();
               if (mounted) await _showInviteCode();
             },
-            child: const Text('Generate new link'),
+            child: const Text('Generate new code'),
           ),
           TextButton(
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: inviteLink));
+              await Clipboard.setData(ClipboardData(text: code));
               if (context.mounted) Navigator.pop(context);
-              _showNotice('Invite link copied.');
+              _showNotice('Invite code copied.');
             },
-            child: const Text('Copy link'),
+            child: const Text('Copy code'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context),
@@ -821,22 +823,15 @@ class _GroupHomePageState extends State<GroupHomePage> {
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        icon: const Icon(Icons.link_rounded, color: _mint, size: 34),
+        icon: const Icon(Icons.pin_rounded, color: _mint, size: 34),
         title: const Text('Invite ready'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Share this invite link with your group:'),
+            const Text('Share this 8-digit code with your group:'),
             const SizedBox(height: 14),
             SelectableText(
-              Uri.base
-                  .replace(
-                    queryParameters: {
-                      ...Uri.base.queryParameters,
-                      'invite': _inviteCode ?? '',
-                    },
-                  )
-                  .toString(),
+              _inviteCode ?? '',
               style: const TextStyle(
                 fontSize: 30,
                 fontWeight: FontWeight.bold,
@@ -847,6 +842,16 @@ class _GroupHomePageState extends State<GroupHomePage> {
           ],
         ),
         actions: [
+          TextButton(
+            onPressed: () async {
+              final code = _inviteCode;
+              if (code == null) return;
+              await Clipboard.setData(ClipboardData(text: code));
+              if (context.mounted) Navigator.pop(context);
+              _showNotice('Invite code copied.');
+            },
+            child: const Text('Copy code'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Done'),
@@ -857,7 +862,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
   }
 
   Future<void> _joinGroup() async {
-    _joinController.text = Uri.base.queryParameters['invite'] ?? '';
+    if (_groupId != null) {
+      _showNotice('Leave your current group before joining another.');
+      return;
+    }
+    _joinController.clear();
     final code = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -865,10 +874,11 @@ class _GroupHomePageState extends State<GroupHomePage> {
         content: TextField(
           controller: _joinController,
           autofocus: true,
-          maxLength: 256,
-          keyboardType: TextInputType.url,
+          maxLength: 8,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           decoration: const InputDecoration(
-            labelText: 'Invitation link or token',
+            labelText: '8-digit invitation code',
           ),
         ),
         actions: [
@@ -886,16 +896,71 @@ class _GroupHomePageState extends State<GroupHomePage> {
     );
     if (!mounted || code == null || code.isEmpty) return;
     try {
-      final inviteUri = Uri.tryParse(code.trim());
-      final inviteToken = inviteUri?.queryParameters['invite'] ?? code.trim();
       final response = await _api.joinGroup(
-        inviteCode: inviteToken,
+        inviteCode: code.trim(),
         memberName: _nameController.text.trim(),
       );
       await _saveSession(response);
       _showNotice('You joined the group.');
     } catch (error) {
       _showNotice(error.toString());
+    }
+  }
+
+  Future<void> _leaveGroup() async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    if (groupId == null || memberId == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Leave group?'),
+        content: const Text(
+          'You can join another group with an invitation code.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _api.leaveGroup(groupId: groupId, memberId: memberId);
+      await _locationSubscription?.cancel();
+      _locationSubscription = null;
+      _locationHeartbeat?.cancel();
+      _locationHeartbeat = null;
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.remove('reso.groupId');
+      await preferences.remove('reso.memberId');
+      if (!mounted) return;
+      setState(() {
+        _groupId = null;
+        _memberId = null;
+        _groupName = 'No group';
+        _inviteCode = null;
+        _inviteExpiresAt = null;
+        _sharingLocation = false;
+        _lastPosition = null;
+        _participants.clear();
+        _messages.clear();
+        _activePing = null;
+        _activePingId = null;
+        _connectionError = null;
+        _selectedChatId = 'global';
+      });
+      _showNotice('You left the group.');
+    } catch (error) {
+      if (mounted) _showNotice(error.toString());
     }
   }
 
@@ -1094,6 +1159,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
                         .firstOrNull,
                     onRoomSelected: (chatId) =>
                         setState(() => _selectedChatId = chatId),
+                    participants: _participants,
+                    currentMemberName: _currentParticipant?.name,
                   ),
                   PeopleScreen(
                     participants: _participants,
@@ -1135,9 +1202,15 @@ class _GroupHomePageState extends State<GroupHomePage> {
         const Spacer(),
         if (_groupId != null && _currentParticipant?.isGeneral == true)
           IconButton(
-            icon: const Icon(Icons.link_rounded, size: 18, color: _mint),
+            icon: const Icon(Icons.pin_rounded, size: 18, color: _mint),
             tooltip: 'Invite members',
             onPressed: _showInviteCode,
+          ),
+        if (_memberId != null)
+          IconButton(
+            icon: const Icon(Icons.edit_rounded, size: 18),
+            tooltip: 'Change name',
+            onPressed: _editName,
           ),
         PopupMenuButton<String>(
           tooltip: 'Menu',
@@ -1151,6 +1224,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
                 _createGroup();
               case 'join':
                 _joinGroup();
+              case 'leave':
+                _leaveGroup();
               case 'lock':
                 setState(() => _isLocked = true);
                 final prefs = await SharedPreferences.getInstance();
@@ -1165,6 +1240,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   (member) => member.id == _memberId && member.isGeneral,
                 ))
               const PopupMenuItem(value: 'create', child: Text('Create group')),
+            if (_memberId != null)
+              const PopupMenuItem(value: 'leave', child: Text('Leave group')),
             const PopupMenuItem(value: 'join', child: Text('Join group')),
             const PopupMenuDivider(),
             const PopupMenuItem(value: 'lock', child: Text('Lock app')),

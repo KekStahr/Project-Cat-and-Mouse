@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'main.dart';
 
-class ChatScreen extends StatelessWidget {
+class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     required this.messages,
@@ -12,6 +12,8 @@ class ChatScreen extends StatelessWidget {
     required this.activeChatId,
     required this.directChatLabel,
     required this.onRoomSelected,
+    required this.participants,
+    required this.currentMemberName,
   });
 
   final List<ChatMessage> messages;
@@ -21,12 +23,92 @@ class ChatScreen extends StatelessWidget {
   final String activeChatId;
   final String? directChatLabel;
   final ValueChanged<String> onRoomSelected;
+  final List<Participant> participants;
+  final String? currentMemberName;
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  String? _mentionQuery;
+  int? _mentionStart;
+
+  void _handleMessageChanged(String value) {
+    final cursor = widget.chatController.selection.extentOffset;
+    if (cursor < 0 || cursor > value.length) {
+      setState(() {
+        _mentionQuery = null;
+        _mentionStart = null;
+      });
+      return;
+    }
+    final match = RegExp(r'@([^\s@]*)$').firstMatch(value.substring(0, cursor));
+    setState(() {
+      _mentionQuery = match?.group(1);
+      _mentionStart = match?.start;
+    });
+  }
+
+  void _insertMention(String name) {
+    final value = widget.chatController.value;
+    final start = _mentionStart;
+    final cursor = value.selection.extentOffset;
+    if (start == null || cursor < start) return;
+    final insertion = '@$name ';
+    final text = value.text.replaceRange(start, cursor, insertion);
+    widget.chatController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + insertion.length),
+    );
+    setState(() {
+      _mentionQuery = null;
+      _mentionStart = null;
+    });
+  }
+
+  List<InlineSpan> _messageSpans(String text, TextStyle baseStyle) {
+    final name = widget.currentMemberName;
+    if (name == null || name.isEmpty) return [TextSpan(text: text)];
+    final expression = RegExp(RegExp.escape('@$name'), caseSensitive: false);
+    final spans = <InlineSpan>[];
+    var offset = 0;
+    for (final match in expression.allMatches(text)) {
+      if (match.start > offset) {
+        spans.add(TextSpan(text: text.substring(offset, match.start)));
+      }
+      spans.add(
+        TextSpan(
+          text: match.group(0),
+          style: baseStyle.copyWith(
+            color: const Color(0xFF9BE3C0),
+            backgroundColor: const Color(0x553CB879),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      );
+      offset = match.end;
+    }
+    if (offset < text.length) spans.add(TextSpan(text: text.substring(offset)));
+    return spans;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final visibleMessages = messages
-        .where((message) => message.chatId == activeChatId)
+    final visibleMessages = widget.messages
+        .where((message) => message.chatId == widget.activeChatId)
         .toList();
+    final query = _mentionQuery;
+    final suggestions = query == null
+        ? const <Participant>[]
+        : widget.participants
+              .where(
+                (member) =>
+                    member.name != widget.currentMemberName &&
+                    member.name.toLowerCase().startsWith(query.toLowerCase()),
+              )
+              .take(5)
+              .toList();
     return Column(
       children: [
         Padding(
@@ -58,18 +140,19 @@ class ChatScreen extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 14),
             children: [
-              for (final entry in rooms.entries)
+              for (final entry in widget.rooms.entries)
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ChoiceChip(
                     label: Text(entry.value),
-                    selected: activeChatId == entry.key,
-                    onSelected: (_) => onRoomSelected(entry.key),
+                    selected: widget.activeChatId == entry.key,
+                    onSelected: (_) => widget.onRoomSelected(entry.key),
                   ),
                 ),
-              if (activeChatId.startsWith('direct:') && directChatLabel != null)
+              if (widget.activeChatId.startsWith('direct:') &&
+                  widget.directChatLabel != null)
                 ChoiceChip(
-                  label: Text(directChatLabel!),
+                  label: Text(widget.directChatLabel!),
                   selected: true,
                   onSelected: (_) {},
                 ),
@@ -107,7 +190,17 @@ class ChatScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(message.text),
+                      Builder(
+                        builder: (context) {
+                          final style = DefaultTextStyle.of(context).style;
+                          return RichText(
+                            text: TextSpan(
+                              style: style,
+                              children: _messageSpans(message.text, style),
+                            ),
+                          );
+                        },
+                      ),
                     ],
                   ),
                 ),
@@ -115,17 +208,39 @@ class ChatScreen extends StatelessWidget {
             },
           ),
         ),
+        if (suggestions.isNotEmpty)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 180),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: suggestions.length,
+              itemBuilder: (context, index) {
+                final member = suggestions[index];
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.alternate_email_rounded, size: 18),
+                  title: Text(member.name),
+                  onTap: () => _insertMention(member.name),
+                );
+              },
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
           child: Row(
             children: [
               Expanded(
                 child: TextField(
-                  controller: chatController,
+                  controller: widget.chatController,
+                  onChanged: _handleMessageChanged,
                   onSubmitted: (val) {
                     if (val.trim().isNotEmpty) {
-                      onSendMessage(val.trim());
-                      chatController.clear();
+                      widget.onSendMessage(val.trim());
+                      widget.chatController.clear();
+                      setState(() {
+                        _mentionQuery = null;
+                        _mentionStart = null;
+                      });
                     }
                   },
                   decoration: InputDecoration(
@@ -142,10 +257,14 @@ class ChatScreen extends StatelessWidget {
               const SizedBox(width: 8),
               IconButton.filled(
                 onPressed: () {
-                  final val = chatController.text.trim();
+                  final val = widget.chatController.text.trim();
                   if (val.isNotEmpty) {
-                    onSendMessage(val);
-                    chatController.clear();
+                    widget.onSendMessage(val);
+                    widget.chatController.clear();
+                    setState(() {
+                      _mentionQuery = null;
+                      _mentionStart = null;
+                    });
                   }
                 },
                 icon: const Icon(Icons.send_rounded),
