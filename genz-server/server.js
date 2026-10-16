@@ -582,14 +582,20 @@ app.post("/api/groups/:groupId/members/:memberId/promote", async (req, res) => {
 app.post("/api/groups/:groupId/members/:memberId/kick", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
-    if (member.role !== "general") {
-        return res.status(403).json({ error: "Only the General can remove members." });
+    if (member.role !== "general" && member.role !== "officer") {
+        return res.status(403).json({ error: "Only Generals and Officers can remove members." });
     }
     const result = await pool.query(
         `DELETE FROM members
          WHERE id = $1 AND group_id = $2 AND role <> 'general'
+           AND ($3::boolean OR (role = 'soldier' AND officer_id = $4))
          RETURNING id`,
-        [req.params.memberId, req.params.groupId],
+        [
+            req.params.memberId,
+            req.params.groupId,
+            member.role === "general",
+            member.id,
+        ],
     );
     if (result.rowCount === 0) {
         return res.status(404).json({ error: "Member not found or cannot be removed." });
@@ -776,16 +782,39 @@ app.post("/api/groups/:groupId/pings/:pingId/ack", async (req, res) => {
     res.sendStatus(204);
 });
 
+app.patch("/api/groups/:groupId/pings/:pingId", async (req, res) => {
+    const member = await memberFor(req, res);
+    if (!member) return;
+    const { latitude, longitude } = req.body;
+    if (
+        typeof latitude !== "number" || !Number.isFinite(latitude) ||
+        latitude < -90 || latitude > 90 ||
+        typeof longitude !== "number" || !Number.isFinite(longitude) ||
+        longitude < -180 || longitude > 180
+    ) {
+        return badRequest(res, "Ping coordinates are invalid.");
+    }
+    const result = await pool.query(
+        `UPDATE pings SET latitude = $1, longitude = $2
+         WHERE id = $3 AND group_id = $4 AND sender_id = $5
+           AND created_at > now() - interval '30 seconds'
+         RETURNING id, latitude, longitude`,
+        [latitude, longitude, req.params.pingId, req.params.groupId, member.id],
+    );
+    if (result.rowCount === 0) {
+        return res.status(403).json({
+            error: "Ping kann nicht mehr verschoben werden (Zeitfenster von 30 Sek. abgelaufen oder nicht dein Ping).",
+        });
+    }
+    res.json(result.rows[0]);
+});
+
 app.patch("/api/groups/:groupId/members/me", async (req, res) => {
     const member = await memberFor(req, res);
     if (!member) return;
-    const name = inputText(req.body.name, 24);
-    if (!name) return badRequest(res, "Name cannot be empty.");
-    const result = await pool.query(
-        "UPDATE members SET name = $1 WHERE id = $2 RETURNING id, name, role, officer_id, color",
-        [name, member.id],
-    );
-    res.json(result.rows[0]);
+    return res.status(403).json({
+        error: "Namen dürfen nur außerhalb einer Gruppe geändert werden.",
+    });
 });
 
 app.use((error, _req, res, _next) => {
@@ -840,14 +869,8 @@ async function start() {
         locationCleanup.unref();
         const pingCleanup = setInterval(() => {
             pool.query(
-                `DELETE FROM pings p
-                 WHERE p.created_at <= now() - interval '10 minutes'
-                    OR (p.created_at <= now() - interval '3 minutes'
-                        AND (SELECT COUNT(*) FROM acknowledgements a
-                             WHERE a.ping_id = p.id) >= CEIL(
-                                (SELECT COUNT(*) FROM members m
-                                 WHERE m.group_id = p.group_id) * 0.8
-                            ))`,
+                `DELETE FROM pings
+                 WHERE created_at <= now() - interval '10 minutes'`,
             ).catch((error) => {
                 console.error("Could not clear expired pings:", error);
             });

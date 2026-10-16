@@ -188,15 +188,17 @@ class GroupApi {
     );
   }
 
-  Future<Map<String, dynamic>> updateName({
+  Future<Map<String, dynamic>> movePing({
     required String groupId,
     required String memberId,
-    required String name,
+    required String pingId,
+    required double latitude,
+    required double longitude,
   }) => _send(
     'PATCH',
-    '/api/groups/$groupId/members/me',
+    '/api/groups/$groupId/pings/$pingId',
     memberId: memberId,
-    body: {'name': name},
+    body: {'latitude': latitude, 'longitude': longitude},
   );
 
   Future<Map<String, dynamic>> _send(

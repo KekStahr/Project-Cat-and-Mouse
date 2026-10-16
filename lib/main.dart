@@ -112,6 +112,21 @@ class ActivePing {
   final String? targetMemberId;
   final String? targetScope;
 
+  ActivePing copyWith({double? latitude, double? longitude}) => ActivePing(
+    id: id,
+    type: type,
+    senderName: senderName,
+    createdAt: createdAt,
+    acknowledgedCount: acknowledgedCount,
+    memberCount: memberCount,
+    latitude: latitude ?? this.latitude,
+    longitude: longitude ?? this.longitude,
+    senderId: senderId,
+    senderRole: senderRole,
+    targetMemberId: targetMemberId,
+    targetScope: targetScope,
+  );
+
   bool get isNew =>
       DateTime.now().difference(createdAt.toLocal()) <
       const Duration(seconds: 60);
@@ -272,7 +287,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
   String? _inviteCode;
   DateTime? _inviteExpiresAt;
   ActivePing? _activePing;
-  String? _dismissedPingId;
   String? _localPingId;
   double? _localPingLatitude;
   double? _localPingLongitude;
@@ -305,6 +319,8 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _groupId = preferences.getString('reso.groupId');
     _memberId = preferences.getString('reso.memberId');
     _isLocked = preferences.getBool('reso.locked') ?? false;
+    _nameController.text =
+        preferences.getString('reso.displayName') ?? _nameController.text;
     final memberId = _memberId;
     if (memberId != null) {
       _knownMessageIds.addAll(
@@ -451,7 +467,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
             }
           }
           if (_selectedTab == 1) _markChatRead(_selectedChatId);
-          if (activePing?.id != _activePing?.id) _dismissedPingId = null;
           _groupName = group['name'] as String;
           _inviteCode = group['invite_code'] as String?;
           _inviteExpiresAt = group['invite_expires_at'] == null
@@ -493,7 +508,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
     _knownMessageIds.clear();
     _unreadGlobalCount = 0;
     _unreadRestrictedCount = 0;
-    _dismissedPingId = null;
     _localPingId = null;
     _localPingLatitude = null;
     _localPingLongitude = null;
@@ -857,17 +871,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
   }
 
   Future<void> _editName() async {
-    final groupId = _groupId;
-    final memberId = _memberId;
-    if (groupId == null || memberId == null) {
-      _showNotice('Join a group first.');
+    if (_groupId != null) {
+      _showNotice('Leave the group before changing your name.');
       return;
     }
-    final currentName = _participants
-        .where((member) => member.id == memberId)
-        .map((member) => member.name)
-        .firstOrNull;
-    _nameController.text = currentName ?? _nameController.text;
     _editingName = true;
     final name = await showDialog<String>(
       context: context,
@@ -879,7 +886,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
           maxLength: 24,
           textCapitalization: TextCapitalization.words,
           decoration: const InputDecoration(
-            labelText: 'Your name in the group',
+            labelText: 'Name for your next group',
           ),
           onSubmitted: (value) => Navigator.pop(context, value.trim()),
         ),
@@ -903,18 +910,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
       _showNotice('Your name must be between 1 and 24 characters.');
       return;
     }
-    try {
-      await _api.updateName(
-        groupId: groupId,
-        memberId: memberId,
-        name: trimmedName,
-      );
-      _nameController.text = trimmedName;
-      await _refreshGroup();
-      if (mounted) _showNotice('Your group name has been updated.');
-    } catch (error) {
-      if (mounted) _showNotice(error.toString());
-    }
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('reso.displayName', trimmedName);
+    _nameController.text = trimmedName;
+    if (mounted) _showNotice('Name saved for your next group.');
   }
 
   Future<void> _createGroup() async {
@@ -1154,7 +1153,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
         _participants.clear();
         _messages.clear();
         _activePing = null;
-        _dismissedPingId = null;
         _localPingId = null;
         _localPingLatitude = null;
         _localPingLongitude = null;
@@ -1199,6 +1197,52 @@ class _GroupHomePageState extends State<GroupHomePage> {
     }
   }
 
+  bool get _canMoveActivePing {
+    final ping = _activePing;
+    final memberId = _memberId;
+    if (ping == null || memberId == null) return false;
+    final current = _currentParticipant;
+    if (current?.isSoldier == true && current?.officerId == null) return false;
+    final age = DateTime.now().difference(ping.createdAt.toLocal());
+    return age >= Duration.zero &&
+        age < const Duration(seconds: 30) &&
+        (ping.senderId == memberId || ping.id == _localPingId);
+  }
+
+  Future<void> _moveActivePing(double latitude, double longitude) async {
+    final groupId = _groupId;
+    final memberId = _memberId;
+    final ping = _activePing;
+    if (!_canMoveActivePing ||
+        groupId == null ||
+        memberId == null ||
+        ping == null) {
+      return;
+    }
+    try {
+      await _api.movePing(
+        groupId: groupId,
+        memberId: memberId,
+        pingId: ping.id,
+        latitude: latitude,
+        longitude: longitude,
+      );
+      _localPingId = ping.id;
+      _localPingLatitude = latitude;
+      _localPingLongitude = longitude;
+      if (!mounted) return;
+      setState(
+        () => _activePing = ping.copyWith(
+          latitude: latitude,
+          longitude: longitude,
+        ),
+      );
+      await _refreshGroup();
+    } catch (error) {
+      if (mounted) _showNotice(error.toString());
+    }
+  }
+
   Future<void> _acknowledgePing() async {
     final groupId = _groupId;
     final memberId = _memberId;
@@ -1210,7 +1254,6 @@ class _GroupHomePageState extends State<GroupHomePage> {
         memberId: memberId,
         pingId: ping.id,
       );
-      if (mounted) setState(() => _dismissedPingId = ping.id);
       await _refreshGroup();
     } catch (error) {
       _showNotice(error.toString());
@@ -1375,10 +1418,10 @@ class _GroupHomePageState extends State<GroupHomePage> {
                     isSharingLocation: _sharingLocation,
                     onLocationSharingChanged: _setLocationSharing,
                     onRequestLocation: _requestLocation,
-                    activePing: _activePing?.id == _dismissedPingId
-                        ? null
-                        : _activePing,
+                    activePing: _activePing,
+                    canMoveActivePing: _canMoveActivePing,
                     onPingSelected: _setPing,
+                    onPingMoved: _moveActivePing,
                     onAcknowledge: _acknowledgePing,
                     currentIsGeneral: _currentParticipant?.isGeneral ?? false,
                     onPromoteMember: _promoteToOfficer,
@@ -1412,11 +1455,15 @@ class _GroupHomePageState extends State<GroupHomePage> {
                   ),
                   PeopleScreen(
                     participants: _participants,
-                    hasActivePing: _activePing != null,
+                    hasActivePing:
+                        _activePing != null &&
+                        !(_currentParticipant?.isSoldier == true &&
+                            _currentParticipant?.officerId == null),
                     memberId: _memberId,
                     searchController: _searchController,
                     onPromoteToOfficer: _promoteToOfficer,
                     onJoinOfficerGroup: _joinOfficerGroup,
+                    onKickMember: _kickMember,
                   ),
                 ],
               ),
@@ -1453,7 +1500,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
             tooltip: 'Invite members',
             onPressed: _showInviteCode,
           ),
-        if (_memberId != null)
+        if (_groupId == null)
           IconButton(
             icon: const Icon(Icons.edit_rounded, size: 18),
             tooltip: 'Change name',
@@ -1480,7 +1527,7 @@ class _GroupHomePageState extends State<GroupHomePage> {
             }
           },
           itemBuilder: (context) => [
-            if (_memberId != null)
+            if (_groupId == null)
               const PopupMenuItem(value: 'name', child: Text('Change name')),
             if (_memberId == null ||
                 _participants.any(

@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:project_genz/chat.dart';
 import 'package:project_genz/map.dart';
 import 'package:project_genz/main.dart';
+import 'package:project_genz/people.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -13,6 +14,7 @@ void main() {
     String name,
     String role, {
     String? officerId,
+    String? color,
   }) => Participant(
     id: id,
     name: name,
@@ -20,7 +22,7 @@ void main() {
     role: role,
     acknowledged: false,
     officerId: officerId,
-    color: null,
+    color: color,
     publicKey: null,
     latitude: null,
     longitude: null,
@@ -30,6 +32,9 @@ void main() {
     required List<Participant> members,
     required String currentMemberId,
     required ValueChanged<PingSelection> onPingSelected,
+    ActivePing? activePing,
+    bool canMoveActivePing = false,
+    Future<void> Function(double latitude, double longitude)? onPingMoved,
   }) => MaterialApp(
     home: Scaffold(
       body: MapScreen(
@@ -41,8 +46,10 @@ void main() {
         isSharingLocation: false,
         onLocationSharingChanged: (_) {},
         onRequestLocation: () async {},
-        activePing: null,
+        activePing: activePing,
+        canMoveActivePing: canMoveActivePing,
         onPingSelected: onPingSelected,
+        onPingMoved: onPingMoved ?? (_, _) async {},
         onAcknowledge: () {},
         currentIsGeneral: false,
         onPromoteMember: (_) {},
@@ -71,7 +78,7 @@ void main() {
     await tester.pumpWidget(const ResoApp());
 
     await tester.longPressAt(const Offset(200, 400));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Send a safety alert'), findsOneWidget);
     expect(find.text('Meetup'), findsOneWidget);
@@ -148,6 +155,86 @@ void main() {
     await tester.pumpAndSettle();
     expect(selection?.targetScope, 'soldiers');
     expect(selection?.targetMemberId, isNull);
+  });
+
+  testWidgets('groups assigned soldiers under their officer', (tester) async {
+    final searchController = TextEditingController();
+    Participant? removedMember;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PeopleScreen(
+            participants: [
+              testMember(
+                'officer-1',
+                'Officer Lee',
+                'officer',
+                color: '#00AA88',
+              ),
+              testMember(
+                'soldier-1',
+                'Soldier Kim',
+                'soldier',
+                officerId: 'officer-1',
+              ),
+            ],
+            hasActivePing: false,
+            memberId: 'officer-1',
+            searchController: searchController,
+            onPromoteToOfficer: (_) {},
+            onJoinOfficerGroup: (_) {},
+            onKickMember: (member) => removedMember = member,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Officers (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Officer Lee Gruppe 1 (1)'), findsOneWidget);
+    await tester.tap(find.text('Officer Lee Gruppe 1 (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Soldier Kim'), findsOneWidget);
+    await tester.tap(find.byTooltip('Remove member'));
+    expect(removedMember?.id, 'soldier-1');
+    searchController.dispose();
+  });
+
+  testWidgets('long press moves an owned ping inside its time window', (
+    tester,
+  ) async {
+    double? movedLatitude;
+    double? movedLongitude;
+    await tester.pumpWidget(
+      pingMap(
+        members: [testMember('general-1', 'General', 'general')],
+        currentMemberId: 'general-1',
+        activePing: ActivePing(
+          id: 'ping-1',
+          type: SafetyPing.meetup,
+          senderName: 'General',
+          senderId: 'general-1',
+          createdAt: DateTime.now().subtract(const Duration(seconds: 10)),
+          acknowledgedCount: 0,
+          memberCount: 2,
+          latitude: 40.0,
+          longitude: -74.0,
+        ),
+        canMoveActivePing: true,
+        onPingSelected: (_) {},
+        onPingMoved: (latitude, longitude) async {
+          movedLatitude = latitude;
+          movedLongitude = longitude;
+        },
+      ),
+    );
+
+    await tester.longPressAt(const Offset(200, 400));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(movedLatitude, isNotNull);
+    expect(movedLongitude, isNotNull);
+    expect(find.text('Send a safety alert'), findsNothing);
   });
 
   testWidgets('opens the remote group creation dialog', (tester) async {
@@ -257,6 +344,7 @@ void main() {
             isSharingLocation: false,
             onLocationSharingChanged: (_) {},
             onRequestLocation: () async {},
+            canMoveActivePing: false,
             activePing: ActivePing(
               id: 'ping-1',
               type: SafetyPing.meetup,
@@ -268,6 +356,7 @@ void main() {
               longitude: -74.006,
             ),
             onPingSelected: (_) {},
+            onPingMoved: (_, _) async {},
             onAcknowledge: () => acknowledgements++,
             currentIsGeneral: false,
             onPromoteMember: (_) {},

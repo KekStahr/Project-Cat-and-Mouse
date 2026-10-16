@@ -11,6 +11,7 @@ class PeopleScreen extends StatefulWidget {
     required this.searchController,
     required this.onPromoteToOfficer,
     required this.onJoinOfficerGroup,
+    required this.onKickMember,
   });
 
   final List<Participant> participants;
@@ -19,6 +20,7 @@ class PeopleScreen extends StatefulWidget {
   final TextEditingController searchController;
   final ValueChanged<Participant> onPromoteToOfficer;
   final ValueChanged<Participant> onJoinOfficerGroup;
+  final ValueChanged<Participant> onKickMember;
 
   @override
   State<PeopleScreen> createState() => _PeopleScreenState();
@@ -50,6 +52,21 @@ class _PeopleScreenState extends State<PeopleScreen> {
       for (final member in widget.participants)
         if (member.isOfficer) member.id: member,
     };
+    final visibleOfficers = officers.values.where((officer) {
+      return visible.contains(officer) ||
+          widget.participants.any(
+            (member) =>
+                member.officerId == officer.id &&
+                member.name.toLowerCase().contains(query),
+          );
+    }).toList();
+    final unassignedSoldiers = visible.where((member) {
+      return member.isSoldier &&
+          (member.officerId == null || !officers.containsKey(member.officerId));
+    }).toList();
+    List<Participant> soldiersFor(Participant officer) => visible
+        .where((member) => member.isSoldier && member.officerId == officer.id)
+        .toList();
     final currentOfficer = officers[me?.officerId];
 
     return Column(
@@ -108,21 +125,95 @@ class _PeopleScreenState extends State<PeopleScreen> {
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              for (final (role, label) in [
-                ('general', 'General'),
-                ('officer', 'Officers'),
-                ('soldier', 'Soldiers'),
-              ])
-                ExpansionTile(
-                  key: PageStorageKey<String>('people-$role'),
-                  title: Text(
-                    '$label (${visible.where((m) => m.role == role).length})',
-                  ),
-                  children: [
-                    for (final member in visible.where((m) => m.role == role))
-                      _memberCard(member, me, officers),
-                  ],
+              ExpansionTile(
+                key: const PageStorageKey<String>('people-general'),
+                title: Text(
+                  'General (${visible.where((member) => member.isGeneral).length})',
                 ),
+                children: [
+                  for (final member in visible.where((m) => m.isGeneral))
+                    _memberCard(member, me, officers),
+                ],
+              ),
+              ExpansionTile(
+                key: const PageStorageKey<String>('people-officers'),
+                title: Text('Officers (${visibleOfficers.length})'),
+                children: [
+                  for (final (index, officer) in visibleOfficers.indexed)
+                    ExpansionTile(
+                      key: PageStorageKey<String>(
+                        'officer-group-${officer.id}',
+                      ),
+                      leading: Icon(
+                        Icons.shield_rounded,
+                        color: _memberColor(officer, officers),
+                      ),
+                      collapsedTextColor: _memberColor(officer, officers),
+                      textColor: _memberColor(officer, officers),
+                      title: Text(
+                        '${officer.name} Gruppe ${index + 1} (${soldiersFor(officer).length})',
+                      ),
+                      children: [
+                        for (final soldier in soldiersFor(officer))
+                          ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: _memberColor(
+                                officer,
+                                officers,
+                              ).withValues(alpha: .22),
+                              child: Text(
+                                soldier.name.characters.first.toUpperCase(),
+                                style: TextStyle(
+                                  color: _memberColor(officer, officers),
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              soldier.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              'Soldier · ${soldier.online ? 'Online' : 'Offline'}',
+                            ),
+                            trailing: Wrap(
+                              children: [
+                                if (me?.isGeneral == true && soldier.isSoldier)
+                                  IconButton(
+                                    tooltip: 'Promote to officer',
+                                    onPressed: () =>
+                                        widget.onPromoteToOfficer(soldier),
+                                    icon: const Icon(
+                                      Icons.military_tech_rounded,
+                                      color: Color(0xFFFFC46B),
+                                    ),
+                                  ),
+                                if (me?.isGeneral == true ||
+                                    me?.id == officer.id)
+                                  IconButton(
+                                    tooltip: 'Remove member',
+                                    onPressed: () =>
+                                        widget.onKickMember(soldier),
+                                    icon: const Icon(
+                                      Icons.person_remove_rounded,
+                                      color: Color(0xFFFF7979),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+              ExpansionTile(
+                key: const PageStorageKey<String>('people-unassigned-soldiers'),
+                title: Text('Soldiers (${unassignedSoldiers.length})'),
+                children: [
+                  for (final soldier in unassignedSoldiers)
+                    _memberCard(soldier, me, officers),
+                ],
+              ),
             ],
           ),
         ),

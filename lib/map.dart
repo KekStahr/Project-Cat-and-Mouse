@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -16,7 +18,9 @@ class MapScreen extends StatefulWidget {
     required this.onLocationSharingChanged,
     required this.onRequestLocation,
     required this.activePing,
+    required this.canMoveActivePing,
     required this.onPingSelected,
+    required this.onPingMoved,
     required this.onAcknowledge,
     required this.currentIsGeneral,
     required this.onPromoteMember,
@@ -33,7 +37,9 @@ class MapScreen extends StatefulWidget {
   final ValueChanged<bool> onLocationSharingChanged;
   final Future<void> Function() onRequestLocation;
   final ActivePing? activePing;
+  final bool canMoveActivePing;
   final ValueChanged<PingSelection> onPingSelected;
+  final Future<void> Function(double latitude, double longitude) onPingMoved;
   final VoidCallback onAcknowledge;
   final bool currentIsGeneral;
   final ValueChanged<Participant> onPromoteMember;
@@ -57,21 +63,22 @@ class _MapScreenState extends State<MapScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1250),
     );
-    if (widget.activePing != null) _pingPulse.repeat(reverse: true);
+    if (_visiblePing?.isNew == true) _pingPulse.repeat(reverse: true);
   }
 
   @override
   void didUpdateWidget(covariant MapScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.activePing == null) {
+    final ping = _visiblePing;
+    final oldPing = _canViewGroupMap(oldWidget) ? oldWidget.activePing : null;
+    if (ping == null || !ping.isNew) {
       _pingPulse
         ..stop()
         ..value = 0;
-    } else if (oldWidget.activePing == null) {
+    } else if (oldPing?.isNew != true) {
       _pingPulse.repeat(reverse: true);
     }
-    final ping = widget.activePing;
-    if (ping != null && ping.id != oldWidget.activePing?.id) {
+    if (ping != null && ping.id != oldPing?.id) {
       _focusPing(ping);
     }
     if (!_centerWhenLocated) return;
@@ -106,6 +113,17 @@ class _MapScreenState extends State<MapScreen>
     }
     return null;
   }
+
+  bool _canViewGroupMap([MapScreen? screen]) {
+    final map = screen ?? widget;
+    Participant? current;
+    for (final member in map.members) {
+      if (member.id == map.currentMemberId) current = member;
+    }
+    return current?.isSoldier != true || current?.officerId != null;
+  }
+
+  ActivePing? get _visiblePing => _canViewGroupMap() ? widget.activePing : null;
 
   Future<void> _centerOnMe() async {
     final member = _currentMember;
@@ -191,15 +209,19 @@ class _MapScreenState extends State<MapScreen>
   Widget build(BuildContext context) {
     final current = _currentMember;
     Participant? locatedMember;
-    for (final member in widget.members) {
+    final canViewGroupMap = _canViewGroupMap();
+    final visibleMembers = canViewGroupMap ? widget.members : <Participant>[];
+    for (final member in visibleMembers) {
       if (member.latitude != null && member.longitude != null) {
         locatedMember = member;
         break;
       }
     }
     final hasCurrentLocation =
-        current?.latitude != null && current?.longitude != null;
-    final ping = widget.activePing;
+        canViewGroupMap &&
+        current?.latitude != null &&
+        current?.longitude != null;
+    final ping = canViewGroupMap ? widget.activePing : null;
     final initialCenter = ping?.latitude != null && ping?.longitude != null
         ? LatLng(ping!.latitude!, ping.longitude!)
         : hasCurrentLocation
@@ -208,10 +230,10 @@ class _MapScreenState extends State<MapScreen>
         ? const LatLng(20, 0)
         : LatLng(locatedMember.latitude!, locatedMember.longitude!);
     final officers = {
-      for (final member in widget.members)
+      for (final member in visibleMembers)
         if (member.isOfficer) member.id: member,
     };
-    final markers = widget.members
+    final markers = visibleMembers
         .where(
           (member) =>
               !member.isGeneral &&
@@ -221,7 +243,7 @@ class _MapScreenState extends State<MapScreen>
         .map(
           (member) => Marker(
             point: LatLng(member.latitude!, member.longitude!),
-            width: 116,
+            width: 100,
             height: 58,
             alignment: Alignment.topCenter,
             child: InkWell(
@@ -251,7 +273,7 @@ class _MapScreenState extends State<MapScreen>
                   ),
                   const SizedBox(height: 2),
                   Container(
-                    constraints: const BoxConstraints(maxWidth: 110),
+                    constraints: const BoxConstraints(maxWidth: 90),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 6,
                       vertical: 2,
@@ -264,7 +286,12 @@ class _MapScreenState extends State<MapScreen>
                       member.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white, fontSize: 9),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ],
@@ -346,7 +373,24 @@ class _MapScreenState extends State<MapScreen>
                     : 12,
                 minZoom: 2,
                 maxZoom: 18,
-                onLongPress: (_, point) => _showPingMenu(context, point),
+                onLongPress: (_, point) {
+                  if (!canViewGroupMap && current?.isSoldier == true) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Join an officer group to use group pings.',
+                        ),
+                      ),
+                    );
+                  } else if (widget.canMoveActivePing &&
+                      widget.activePing != null) {
+                    unawaited(
+                      widget.onPingMoved(point.latitude, point.longitude),
+                    );
+                  } else {
+                    _showPingMenu(context, point);
+                  }
+                },
               ),
               children: [
                 TileLayer(
@@ -398,7 +442,7 @@ class _MapScreenState extends State<MapScreen>
                               widget.connectionError ??
                                   (widget.groupId == null
                                       ? 'No group connected'
-                                      : '${widget.members.length} members · ${widget.members.where((member) => member.online).length} online'),
+                                      : '${visibleMembers.length} members · ${visibleMembers.where((member) => member.online).length} online'),
                               style: const TextStyle(
                                 color: Color(0xFF8B9AAA),
                                 fontSize: 11,
@@ -450,16 +494,16 @@ class _MapScreenState extends State<MapScreen>
                   color: const Color(0xF2121B26),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color:
-                        widget.activePing?.type.color ??
-                        const Color(0xFF9BE3C0),
+                    color: ping?.type.color ?? const Color(0xFF9BE3C0),
                     width: 1.5,
                   ),
                 ),
                 child: Text(
-                  widget.activePing == null
+                  !canViewGroupMap && current?.isSoldier == true
+                      ? 'Ordne dich einer Offiziersgruppe zu'
+                      : ping == null
                       ? 'Kein aktiver Ping'
-                      : 'Roger: ${widget.activePing!.acknowledgedCount} / ${widget.activePing!.memberCount} Personen',
+                      : 'Roger: ${ping.acknowledgedCount} / ${ping.memberCount} Personen',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 12,
@@ -470,7 +514,7 @@ class _MapScreenState extends State<MapScreen>
           ),
           Positioned(
             right: 14,
-            bottom: widget.activePing == null ? 42 : 148,
+            bottom: ping == null ? 42 : 148,
             child: FloatingActionButton.small(
               heroTag: 'center-map-on-me',
               tooltip: 'Get location and center map',
@@ -478,22 +522,23 @@ class _MapScreenState extends State<MapScreen>
               child: const Icon(Icons.my_location_rounded),
             ),
           ),
-          if (widget.activePing != null)
+          if (ping != null)
             Positioned.fill(
               child: IgnorePointer(
                 child: AnimatedBuilder(
                   animation: _pingPulse,
                   builder: (context, _) => CustomPaint(
                     painter: _PingEdgePainter(
-                      color: widget.activePing!.type.color,
+                      color: ping.type.color,
                       strength: _pingPulse.value,
+                      isNew: ping.isNew,
                     ),
                     child: const SizedBox.expand(),
                   ),
                 ),
               ),
             ),
-          if (widget.activePing != null)
+          if (ping != null)
             Positioned(
               left: 12,
               right: 12,
@@ -507,14 +552,14 @@ class _MapScreenState extends State<MapScreen>
                   color: const Color(0xF2121B26),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(
-                    color: widget.activePing!.type.color.withValues(
-                      alpha: widget.activePing!.isNew ? .72 : .4,
+                    color: ping.type.color.withValues(
+                      alpha: ping.isNew ? .72 : .4,
                     ),
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: widget.activePing!.type.color.withValues(
-                        alpha: .12,
+                      color: ping.type.color.withValues(
+                        alpha: ping.isNew ? .12 : .035,
                       ),
                       blurRadius: 16,
                     ),
@@ -522,10 +567,7 @@ class _MapScreenState extends State<MapScreen>
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      widget.activePing!.type.icon,
-                      color: widget.activePing!.type.color,
-                    ),
+                    Icon(ping.type.icon, color: ping.type.color),
                     const SizedBox(width: 9),
                     Expanded(
                       child: Column(
@@ -536,7 +578,7 @@ class _MapScreenState extends State<MapScreen>
                             children: [
                               Expanded(
                                 child: Text(
-                                  _pingInstruction(widget.activePing!),
+                                  _pingInstruction(ping),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -547,9 +589,9 @@ class _MapScreenState extends State<MapScreen>
                               ),
                               const SizedBox(width: 6),
                               Text(
-                                widget.activePing!.isNew ? 'NEW' : 'ACTIVE',
+                                ping.isNew ? 'NEW' : 'ACTIVE',
                                 style: TextStyle(
-                                  color: widget.activePing!.type.color,
+                                  color: ping.type.color,
                                   fontSize: 9,
                                   fontWeight: FontWeight.w800,
                                 ),
@@ -558,22 +600,31 @@ class _MapScreenState extends State<MapScreen>
                           ),
                           const SizedBox(height: 3),
                           Text(
-                            '${widget.activePing!.ageLabel} · Bestätigt ${widget.activePing!.acknowledgedCount}/${widget.activePing!.memberCount}',
+                            '${ping.ageLabel} · Bestätigt ${ping.acknowledgedCount}/${ping.memberCount}',
                             style: const TextStyle(
                               color: Color(0xFFB1BDCA),
                               fontSize: 10,
                             ),
                           ),
+                          if (widget.canMoveActivePing) ...[
+                            const SizedBox(height: 3),
+                            const Text(
+                              'Hold the map to move this ping (30 sec)',
+                              style: TextStyle(
+                                color: Color(0xFFB1BDCA),
+                                fontSize: 9,
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 5),
                           LinearProgressIndicator(
-                            value: widget.activePing!.memberCount == 0
+                            value: ping.memberCount == 0
                                 ? 0
-                                : (widget.activePing!.acknowledgedCount /
-                                          widget.activePing!.memberCount)
+                                : (ping.acknowledgedCount / ping.memberCount)
                                       .clamp(0.0, 1.0)
                                       .toDouble(),
                             minHeight: 3,
-                            color: widget.activePing!.type.color,
+                            color: ping.type.color,
                             backgroundColor: Colors.white.withValues(
                               alpha: .12,
                             ),
@@ -583,7 +634,7 @@ class _MapScreenState extends State<MapScreen>
                     ),
                     const SizedBox(width: 9),
                     FilledButton.tonal(
-                      onPressed: _isPingForCurrentMember(widget.activePing!)
+                      onPressed: _isPingForCurrentMember(ping)
                           ? widget.onAcknowledge
                           : null,
                       style: FilledButton.styleFrom(
@@ -591,9 +642,7 @@ class _MapScreenState extends State<MapScreen>
                         minimumSize: const Size(62, 40),
                       ),
                       child: Text(
-                        _isPingForCurrentMember(widget.activePing!)
-                            ? 'Roger'
-                            : 'Not for me',
+                        _isPingForCurrentMember(ping) ? 'Roger' : 'Not for me',
                       ),
                     ),
                   ],
@@ -809,10 +858,15 @@ class _PingPickerState extends State<_PingPicker> {
 }
 
 class _PingEdgePainter extends CustomPainter {
-  const _PingEdgePainter({required this.color, required this.strength});
+  const _PingEdgePainter({
+    required this.color,
+    required this.strength,
+    required this.isNew,
+  });
 
   final Color color;
   final double strength;
+  final bool isNew;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -820,25 +874,30 @@ class _PingEdgePainter extends CustomPainter {
       (Offset.zero & size).deflate(5),
       const Radius.circular(22),
     );
-    final pulse = .35 + strength * .65;
+    final pulse = isNew ? .35 + strength * .65 : .2;
     canvas.drawRRect(
       edge,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 5 + strength * 2
-        ..color = color.withValues(alpha: .35 + pulse * .3)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 7 + strength * 7),
+        ..strokeWidth = isNew ? 5 + strength * 2 : 2
+        ..color = color.withValues(alpha: isNew ? .35 + pulse * .3 : .16)
+        ..maskFilter = MaskFilter.blur(
+          BlurStyle.normal,
+          isNew ? 7 + strength * 7 : 3,
+        ),
     );
     canvas.drawRRect(
       edge,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5
-        ..color = color.withValues(alpha: .55 + pulse * .35),
+        ..color = color.withValues(alpha: isNew ? .55 + pulse * .35 : .28),
     );
   }
 
   @override
   bool shouldRepaint(covariant _PingEdgePainter oldDelegate) =>
-      oldDelegate.color != color || oldDelegate.strength != strength;
+      oldDelegate.color != color ||
+      oldDelegate.strength != strength ||
+      oldDelegate.isNew != isNew;
 }
